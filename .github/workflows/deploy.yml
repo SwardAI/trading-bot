@@ -32,9 +32,22 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
+            # If not a git repo yet, clone it fresh
+            if [ ! -d ~/trading/.git ]; then
+              rm -rf ~/trading_old
+              mv ~/trading ~/trading_old
+              git clone https://github.com/SwardAI/trading-bot.git ~/trading
+              # Preserve .env and data from old setup
+              cp ~/trading_old/.env ~/trading/.env 2>/dev/null || true
+              cp -r ~/trading_old/data ~/trading/data 2>/dev/null || true
+            else
+              cd ~/trading
+              git pull origin main
+            fi
             cd ~/trading
-            git pull origin main
-            docker-compose down
+            # Remove old containers to avoid docker-compose v1 bugs
+            docker-compose down --remove-orphans 2>/dev/null || true
+            docker rm -f crypto-bot 2>/dev/null || true
             docker-compose build --no-cache
             docker-compose up -d
             sleep 5
