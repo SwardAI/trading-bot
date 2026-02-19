@@ -215,18 +215,43 @@ class Bot:
         )
 
     def _tick_strategies(self):
-        """Called on each tick — run on_tick() for all active strategies."""
+        """Called on each tick — run on_tick() for all active strategies.
+
+        Tracks consecutive failures per strategy and stops it after 10 in a row
+        to prevent blind operation during API outages.
+        """
         for strategy in self.strategies:
-            if strategy.is_running:
-                try:
-                    strategy.on_tick()
-                except Exception as e:
-                    logger.error(f"Error in {strategy.strategy_name} tick: {e}", exc_info=True)
+            if not strategy.is_running:
+                continue
+
+            try:
+                strategy.on_tick()
+                # Reset failure counter on success
+                if not hasattr(strategy, '_consecutive_failures'):
+                    strategy._consecutive_failures = 0
+                strategy._consecutive_failures = 0
+            except Exception as e:
+                strategy._consecutive_failures = getattr(strategy, '_consecutive_failures', 0) + 1
+                logger.error(f"Error in {strategy.strategy_name} tick ({strategy._consecutive_failures} consecutive): {e}", exc_info=True)
+
+                if strategy._consecutive_failures >= 10:
+                    logger.critical(
+                        f"{strategy.strategy_name} failed {strategy._consecutive_failures} ticks in a row — "
+                        f"stopping to prevent stale orders"
+                    )
+                    self.alerter.send_alert(
+                        f"Strategy {strategy.strategy_name} stopped after {strategy._consecutive_failures} consecutive errors: {e}",
+                        AlertLevel.CRITICAL,
+                    )
+                    strategy.stop()
 
     def _risk_check(self):
-        """Periodic risk evaluation — check circuit breakers."""
+        """Periodic risk evaluation — check circuit breakers and auto-resume."""
         if not self.risk_manager:
             return
+
+        # Check if a daily circuit breaker should auto-resume
+        self.risk_manager.circuit_breaker.check_auto_resume()
 
         try:
             triggered, level = self.risk_manager.run_circuit_breaker_check()

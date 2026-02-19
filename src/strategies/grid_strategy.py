@@ -76,7 +76,23 @@ class GridStrategy(BaseStrategy):
 
         # Try to load saved state
         if self._load_state():
-            self.logger.info(f"Resumed grid for {self.symbol} from saved state (center: {self.grid_center})")
+            # Check if saved grid is stale (price moved significantly since last run)
+            try:
+                ticker = self.market_data.get_ticker(self.symbol)
+                current_price = ticker["last"]
+                drift_pct = abs(current_price - self.grid_center) / self.grid_center * 100
+
+                if drift_pct >= self.rebalance_trigger_pct:
+                    self.logger.warning(
+                        f"Stale grid detected: price drifted {drift_pct:.1f}% from center {self.grid_center}. "
+                        f"Rebalancing to {current_price}."
+                    )
+                    self.grid_center = current_price
+                    self.grid_levels = self.calculate_grid_levels(current_price)
+                else:
+                    self.logger.info(f"Resumed grid for {self.symbol} from saved state (center: {self.grid_center})")
+            except Exception as e:
+                self.logger.error(f"Failed to check grid staleness: {e}, using saved state")
         else:
             # Fresh grid from current price
             ticker = self.market_data.get_ticker(self.symbol)
@@ -192,6 +208,18 @@ class GridStrategy(BaseStrategy):
             amount = self.order_size_usd / level["price"]
             cost_usd = self.order_size_usd
 
+            # Check exchange minimum order size
+            try:
+                market = self.exchange.exchange.markets.get(self.symbol, {})
+                min_amount = market.get("limits", {}).get("amount", {}).get("min", 0) or 0
+                if amount < min_amount:
+                    self.logger.warning(
+                        f"Order amount {amount:.8f} below exchange minimum {min_amount} for {self.symbol}, skipping"
+                    )
+                    continue
+            except Exception:
+                pass  # If we can't check, proceed anyway
+
             # Risk check
             order_request = OrderRequest(
                 symbol=self.symbol,
@@ -228,7 +256,7 @@ class GridStrategy(BaseStrategy):
     # --- Fill detection ---
 
     def _check_fills(self):
-        """Check for filled grid orders and create opposite orders for round-trips."""
+        """Check for filled grid orders by verifying each order's status directly."""
         try:
             open_orders = self.exchange.fetch_open_orders(self.symbol)
             exchange_open_ids = {o["id"] for o in open_orders}
@@ -240,9 +268,26 @@ class GridStrategy(BaseStrategy):
             if level["status"] != "open" or not level["order_id"]:
                 continue
 
-            # If order is no longer on exchange, it was filled
-            if level["order_id"] not in exchange_open_ids:
-                self._handle_fill(level)
+            # If order is still on exchange, skip
+            if level["order_id"] in exchange_open_ids:
+                continue
+
+            # Order disappeared — verify it was actually filled (not cancelled/expired)
+            try:
+                order = self.exchange.exchange.fetch_order(level["order_id"], self.symbol)
+                if order["status"] == "closed":
+                    self._handle_fill(level)
+                elif order["status"] == "canceled":
+                    if order.get("filled", 0) > 0:
+                        self._handle_fill(level)
+                    else:
+                        self.logger.warning(f"Order {level['order_id']} was cancelled, resetting to pending")
+                        level["status"] = "pending"
+                        level["order_id"] = None
+                else:
+                    self.logger.warning(f"Order {level['order_id']} in unexpected state: {order['status']}")
+            except Exception as e:
+                self.logger.error(f"Failed to verify order {level['order_id']}: {e}, skipping")
 
     def _handle_fill(self, level: dict):
         """Handle a filled grid order — create opposite order and update P&L.
