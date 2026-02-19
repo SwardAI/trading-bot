@@ -9,11 +9,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project
 COPY . .
 
-# Create data directories
-RUN mkdir -p data/historical data/logs
-
 # Don't run as root
 RUN useradd -m botuser
+
+# Create data directories and give botuser ownership
+RUN mkdir -p data/historical data/logs && chown -R botuser:botuser data/
+
 USER botuser
 
 # Health check
