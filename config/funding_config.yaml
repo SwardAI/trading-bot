@@ -1,0 +1,18 @@
+funding_strategy:
+  enabled: false
+  exchanges:
+    spot: "binance"
+    futures: "binance"
+
+  pairs:
+    - "BTC/USDT"
+    - "ETH/USDT"
+    - "SOL/USDT"
+
+  min_funding_rate: 0.03
+  exit_funding_rate: 0.01
+  position_size_pct: 15
+  max_positions: 2
+
+  max_basis_divergence_pct: 1.5
+  rebalance_threshold_pct: 2.0

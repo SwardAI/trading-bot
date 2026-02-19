@@ -1,0 +1,49 @@
+bot:
+  name: "CryptoQuantBot"
+  mode: "paper"  # "paper" or "live" — START WITH PAPER
+  log_level: "INFO"
+  timezone: "UTC"
+
+exchanges:
+  binance:
+    enabled: true
+    api_key_env: "BINANCE_API_KEY"
+    api_secret_env: "BINANCE_API_SECRET"
+    sandbox: true
+    rate_limit_ms: 100
+  bybit:
+    enabled: false
+    api_key_env: "BYBIT_API_KEY"
+    api_secret_env: "BYBIT_API_SECRET"
+    sandbox: true
+    rate_limit_ms: 100
+
+risk_management:
+  max_risk_per_trade_pct: 2.0
+  max_order_size_usd: 500
+  max_total_exposure_pct: 60
+  max_single_pair_exposure_pct: 20
+  max_correlated_exposure_pct: 35
+  daily_loss_limit_pct: 3
+  weekly_loss_limit_pct: 7
+  monthly_loss_limit_pct: 12
+  reserve_cash_pct: 20
+  after_circuit_breaker:
+    reduce_position_sizes_by_pct: 50
+    recovery_period_hours: 48
+
+alerts:
+  telegram:
+    enabled: true
+    bot_token_env: "TELEGRAM_BOT_TOKEN"
+    chat_id_env: "TELEGRAM_CHAT_ID"
+    daily_report_time: "08:00"  # UTC
+    report_interval_seconds: 36000 # How often to send TG reports (3600=1hr, 0=daily only)
+
+scheduling:
+  grid_check_interval_seconds: 5       # How often to check for grid fills
+  momentum_check_interval_seconds: 60  # How often to check momentum signals
+  funding_check_interval_seconds: 300  # Funding rate check interval
+  risk_check_interval_seconds: 60      # Circuit breaker evaluation
+  reconciliation_interval_seconds: 300  # Sync local state with exchange
+  snapshot_interval_seconds: 3600       # Account balance recording

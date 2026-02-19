@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python main.py:*)",
+      "Bash(where:*)",
+      "Bash(/c/Users/samue/AppData/Local/Programs/Python/Python312/python.exe:*)",
+      "Bash(source:*)",
+      "Bash(/c/Users/samue/nextprojects/trading/venv/Scripts/python.exe:*)",
+      "Bash(venv/Scripts/python.exe:*)",
+      "Bash(ssh-keygen:*)",
+      "Bash(ssh:*)",
+      "Bash(scp:*)"
+    ]
+  }
+}

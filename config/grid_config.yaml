@@ -1,0 +1,27 @@
+grid_strategy:
+  enabled: true
+  pairs:
+    - symbol: "BTC/USDT"
+      grid_type: "geometric"
+      num_grids: 20
+      grid_spacing_pct: 0.5
+      order_size_usd: 75
+      upper_bound_pct: 10
+      lower_bound_pct: 10
+      rebalance_trigger_pct: 8
+      take_profit_pct: null
+      stop_loss_pct: 15
+
+    - symbol: "ETH/USDT"
+      grid_type: "geometric"
+      num_grids: 15
+      grid_spacing_pct: 0.8
+      order_size_usd: 50
+      upper_bound_pct: 12
+      lower_bound_pct: 12
+      rebalance_trigger_pct: 10
+      stop_loss_pct: 15
+
+  max_open_orders: 40
+  min_profit_after_fees: 0.15
+  fee_rate: 0.075

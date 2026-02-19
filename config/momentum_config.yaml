@@ -1,0 +1,35 @@
+momentum_strategy:
+  enabled: false
+  pairs:
+    - "BTC/USDT"
+    - "ETH/USDT"
+    - "SOL/USDT"
+    - "AVAX/USDT"
+    - "LINK/USDT"
+
+  timeframe: "1h"
+  confirmation_timeframe: "4h"
+
+  # Indicator parameters
+  ema_fast: 9
+  ema_slow: 21
+  rsi_period: 14
+  rsi_long_threshold: 55
+  rsi_short_threshold: 45
+  adx_period: 14
+  adx_min_strength: 25
+  volume_surge_multiplier: 1.5
+  atr_period: 14
+
+  # Position management
+  risk_per_trade_pct: 1.0
+  max_concurrent_positions: 3
+  trailing_stop_atr_multiplier: 1.5
+  time_stop_hours: 72
+
+  # Filters
+  min_daily_volume_usd: 50000000
+  avoid_within_minutes_of_funding: 30
+
+  # Cooldown
+  cooldown_after_loss_minutes: 60
