@@ -10,7 +10,12 @@
       "Bash(venv/Scripts/python.exe:*)",
       "Bash(ssh-keygen:*)",
       "Bash(ssh:*)",
-      "Bash(scp:*)"
+      "Bash(scp:*)",
+      "Bash(gh auth:*)",
+      "Bash(BINANCE_API_KEY=test BINANCE_API_SECRET=test venv/Scripts/python.exe:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ]
   }
 }
