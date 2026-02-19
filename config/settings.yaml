@@ -38,7 +38,7 @@ alerts:
     bot_token_env: "TELEGRAM_BOT_TOKEN"
     chat_id_env: "TELEGRAM_CHAT_ID"
     daily_report_time: "08:00"  # UTC
-    report_interval_seconds: 36000 # How often to send TG reports (3600=1hr, 0=daily only)
+    report_interval_seconds: 36000 # (3600=1hr, 0=daily only)
 
 scheduling:
   grid_check_interval_seconds: 5       # How often to check for grid fills
