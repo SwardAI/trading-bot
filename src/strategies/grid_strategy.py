@@ -277,15 +277,13 @@ class GridStrategy(BaseStrategy):
                 order = self.exchange.exchange.fetch_order(level["order_id"], self.symbol)
                 if order["status"] == "closed":
                     self._handle_fill(level)
-                elif order["status"] == "canceled":
+                elif order["status"] in ("canceled", "expired", "rejected"):
                     if order.get("filled", 0) > 0:
                         self._handle_fill(level)
                     else:
-                        self.logger.warning(f"Order {level['order_id']} was cancelled, resetting to pending")
+                        self.logger.info(f"Order {level['order_id']} {order['status']}, resetting to pending")
                         level["status"] = "pending"
                         level["order_id"] = None
-                else:
-                    self.logger.warning(f"Order {level['order_id']} in unexpected state: {order['status']}")
             except Exception as e:
                 self.logger.error(f"Failed to verify order {level['order_id']}: {e}, skipping")
 
