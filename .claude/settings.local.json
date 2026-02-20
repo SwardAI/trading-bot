@@ -15,7 +15,17 @@
       "Bash(BINANCE_API_KEY=test BINANCE_API_SECRET=test venv/Scripts/python.exe:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "WebFetch(domain:www4.skatteverket.se)",
+      "WebFetch(domain:cms.law)",
+      "WebFetch(domain:koinly.io)",
+      "WebFetch(domain:divly.com)",
+      "WebFetch(domain:tokentax.co)",
+      "WebFetch(domain:www.nomadtax.se)",
+      "Bash(gh secret:*)",
+      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" secret list --repo SwardAI/trading-bot)",
+      "Bash(sqlite3:*)",
+      "Bash(python3:*)"
     ]
   }
 }

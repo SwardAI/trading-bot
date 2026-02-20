@@ -106,7 +106,8 @@ class Reporter:
         # Risk status
         exposure_pct = balance_info.get("exposure_pct", 0)
         max_exposure = 60
-        reserve_pct = (balance_info.get("free_usd", 0) / total_balance * 100) if total_balance > 0 else 0
+        live_total = balance_info.get("total_usd", 0)
+        reserve_pct = (balance_info.get("free_usd", 0) / live_total * 100) if live_total > 0 else 0
 
         lines.extend([
             "",

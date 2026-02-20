@@ -1,5 +1,5 @@
 momentum_strategy:
-  enabled: false
+  enabled: true
   pairs:
     - "BTC/USDT"
     - "ETH/USDT"
