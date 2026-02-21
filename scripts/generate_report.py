@@ -34,17 +34,16 @@ def main():
     perf = PerformanceTracker(db)
 
     # Initialize exchange + risk manager so reporter can get live balance
-    configs = load_all_configs()
-    settings = configs["settings"]
+    config = load_all_configs()
     risk_manager = None
 
-    for name, exc_config in settings.get("exchanges", {}).items():
+    for name, exc_config in config.get("exchanges", {}).items():
         if exc_config.get("enabled"):
             try:
                 exchange = ExchangeManager(name, exc_config)
                 position_tracker = PositionTracker(db, exchange)
                 risk_manager = RiskManager(
-                    settings.get("risk_management", {}), position_tracker, db
+                    config.get("risk_management", {}), position_tracker, db
                 )
             except Exception:
                 pass  # Fall back to report without live balance
