@@ -12,9 +12,13 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.core.config_loader import load_all_configs
 from src.core.database import Database
+from src.core.exchange import ExchangeManager
 from src.journal.performance import PerformanceTracker
 from src.journal.reporter import Reporter
+from src.risk.position_tracker import PositionTracker
+from src.risk.risk_manager import RiskManager
 
 
 def main():
@@ -28,7 +32,25 @@ def main():
     db = Database(args.db)
     db.init_db()
     perf = PerformanceTracker(db)
-    reporter = Reporter(db, perf)
+
+    # Initialize exchange + risk manager so reporter can get live balance
+    configs = load_all_configs()
+    settings = configs["settings"]
+    risk_manager = None
+
+    for name, exc_config in settings.get("exchanges", {}).items():
+        if exc_config.get("enabled"):
+            try:
+                exchange = ExchangeManager(name, exc_config)
+                position_tracker = PositionTracker(db, exchange)
+                risk_manager = RiskManager(
+                    settings.get("risk_management", {}), position_tracker, db
+                )
+            except Exception:
+                pass  # Fall back to report without live balance
+            break
+
+    reporter = Reporter(db, perf, risk_manager)
 
     if args.metrics:
         metrics = perf.get_strategy_metrics(args.metrics, days=args.days)
