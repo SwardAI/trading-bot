@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -186,6 +187,27 @@ class Database:
         conn = self._get_connection()
         cursor = conn.execute(sql, params)
         return [dict(row) for row in cursor.fetchall()]
+
+    @contextmanager
+    def transaction(self):
+        """Context manager for explicit transactions.
+
+        Groups multiple operations into a single atomic commit.
+        Rolls back on error.
+
+        Usage:
+            with db.transaction() as conn:
+                conn.execute("INSERT INTO ...", (...))
+                conn.execute("UPDATE ...", (...))
+        """
+        conn = self._get_connection()
+        conn.execute("BEGIN")
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     def close(self):
         """Close the thread-local database connection."""

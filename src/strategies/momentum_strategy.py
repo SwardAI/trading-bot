@@ -1,4 +1,5 @@
 import json
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -84,6 +85,7 @@ class MomentumStrategy(BaseStrategy):
 
         # Active positions (loaded from DB)
         self.positions: list[dict] = []
+        self._entry_lock = threading.Lock()
 
         self.logger.info(
             f"MomentumStrategy initialized: {len(self.pairs)} pairs, "
@@ -118,21 +120,22 @@ class MomentumStrategy(BaseStrategy):
 
     def _scan_for_entries(self):
         """Scan all pairs for entry signals."""
-        for symbol in self.pairs:
-            # Skip if already have position in this pair
-            if any(p["pair"] == symbol and p["status"] == "open" for p in self.positions):
-                continue
+        with self._entry_lock:
+            for symbol in self.pairs:
+                # Skip if already have position in this pair
+                if any(p["pair"] == symbol and p["status"] == "open" for p in self.positions):
+                    continue
 
-            # Check cooldown
-            if self._is_in_cooldown(symbol):
-                continue
+                # Check cooldown
+                if self._is_in_cooldown(symbol):
+                    continue
 
-            try:
-                signal = self._check_entry_signal(symbol)
-                if signal:
-                    self._enter_position(symbol, signal)
-            except Exception as e:
-                self.logger.error(f"Error scanning {symbol}: {e}")
+                try:
+                    signal = self._check_entry_signal(symbol)
+                    if signal:
+                        self._enter_position(symbol, signal)
+                except Exception as e:
+                    self.logger.error(f"Error scanning {symbol}: {e}")
 
     def _check_entry_signal(self, symbol: str) -> dict | None:
         """Check if all entry conditions are met for a symbol.

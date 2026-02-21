@@ -1,3 +1,5 @@
+import time
+
 from src.core.database import Database
 from src.core.exchange import ExchangeManager
 from src.core.logger import setup_logger
@@ -8,6 +10,9 @@ logger = setup_logger("risk.position_tracker")
 CORRELATED_GROUPS = {
     "crypto_major": ["BTC/USDT", "ETH/USDT"],
 }
+
+# Maximum age of cached balance before a refresh is forced (seconds)
+BALANCE_CACHE_TTL = 30
 
 
 class PositionTracker:
@@ -24,6 +29,7 @@ class PositionTracker:
         self.db = db
         self.exchange = exchange
         self._cached_balance: dict | None = None
+        self._balance_fetched_at: float = 0
 
     def refresh_balance(self) -> dict:
         """Fetch fresh balance from exchange and cache it.
@@ -32,15 +38,23 @@ class PositionTracker:
             ccxt balance dict with 'total', 'free', 'used'.
         """
         self._cached_balance = self.exchange.fetch_balance()
+        self._balance_fetched_at = time.monotonic()
         return self._cached_balance
 
     def get_balance(self) -> dict:
         """Get current balance summary.
 
+        Automatically refreshes if cache is older than BALANCE_CACHE_TTL.
+
         Returns:
             Dict with total_usd, free_usd, used_usd, exposure_pct.
         """
-        balance = self._cached_balance or self.refresh_balance()
+        if (
+            self._cached_balance is None
+            or (time.monotonic() - self._balance_fetched_at) > BALANCE_CACHE_TTL
+        ):
+            self.refresh_balance()
+        balance = self._cached_balance
         total = balance.get("total", {})
         free = balance.get("free", {})
 

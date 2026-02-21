@@ -76,6 +76,9 @@ class GridStrategy(BaseStrategy):
 
         # Try to load saved state
         if self._load_state():
+            # Reconcile saved state with actual exchange holdings
+            self._reconcile_inventory()
+
             # Check if saved grid is stale (price moved significantly since last run)
             try:
                 ticker = self.market_data.get_ticker(self.symbol)
@@ -103,6 +106,41 @@ class GridStrategy(BaseStrategy):
 
         self._place_grid_orders()
         self._save_state()
+
+    def _reconcile_inventory(self):
+        """Sync saved grid inventory with actual exchange holdings on startup."""
+        try:
+            balance = self.exchange.fetch_balance()
+            base_asset = self.symbol.split("/")[0]
+            actual_free = float(balance.get("free", {}).get(base_asset, 0))
+            actual_total = float(balance.get("total", {}).get(base_asset, 0))
+
+            if abs(self.inventory_amount - actual_total) > 1e-8:
+                self.logger.warning(
+                    f"Inventory mismatch on restart for {self.symbol}: "
+                    f"saved={self.inventory_amount:.8f}, exchange={actual_total:.8f} {base_asset}. "
+                    f"Adjusting to exchange holdings."
+                )
+                self.inventory_amount = actual_total
+
+            # Remove pending sell orders if we don't have enough inventory to cover them
+            pending_sell_amount = sum(
+                self.order_size_usd / level["price"]
+                for level in self.grid_levels
+                if level["side"] == "sell" and level["status"] == "pending"
+            )
+            if pending_sell_amount > actual_free and actual_free < 1e-8:
+                removed = sum(1 for l in self.grid_levels if l["side"] == "sell" and l["status"] == "pending")
+                self.grid_levels = [
+                    l for l in self.grid_levels
+                    if not (l["side"] == "sell" and l["status"] == "pending")
+                ]
+                self.logger.warning(
+                    f"Removed {removed} pending sell orders: insufficient {base_asset} holdings "
+                    f"(have {actual_free:.8f}, need {pending_sell_amount:.8f})"
+                )
+        except Exception as e:
+            self.logger.error(f"Failed to reconcile inventory with exchange: {e}")
 
     def stop(self):
         """Cancel all grid orders and save state."""
@@ -299,18 +337,19 @@ class GridStrategy(BaseStrategy):
 
         self.logger.info(f"Grid fill detected: {fill_side} @ {fill_price} ({self.symbol})")
 
-        # Log the fill as a trade
+        # Log the fill and update inventory atomically
         now = datetime.now(timezone.utc).isoformat()
         fee_usd = self.order_size_usd * (self.fee_rate / 100)
 
-        cursor = self.db.execute(
-            """INSERT INTO trades
-            (timestamp, strategy, pair, side, order_type, price, amount, cost_usd,
-             fee_usd, exchange_order_id)
-            VALUES (?, 'grid', ?, ?, 'limit', ?, ?, ?, ?, ?)""",
-            (now, self.symbol, fill_side, fill_price, amount, self.order_size_usd, fee_usd, level["order_id"]),
-        )
-        fill_trade_id = cursor.lastrowid
+        with self.db.transaction() as conn:
+            cursor = conn.execute(
+                """INSERT INTO trades
+                (timestamp, strategy, pair, side, order_type, price, amount, cost_usd,
+                 fee_usd, exchange_order_id)
+                VALUES (?, 'grid', ?, ?, 'limit', ?, ?, ?, ?, ?)""",
+                (now, self.symbol, fill_side, fill_price, amount, self.order_size_usd, fee_usd, level["order_id"]),
+            )
+            fill_trade_id = cursor.lastrowid
 
         # Update inventory
         if fill_side == "buy":

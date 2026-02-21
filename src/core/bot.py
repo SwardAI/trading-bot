@@ -382,17 +382,26 @@ class Bot:
         self.running = False
         logger.info("Stopping bot...")
 
-        # Stop scheduler
+        # Stop scheduler first to prevent new ticks
         if self.scheduler.running:
             self.scheduler.shutdown(wait=False)
 
         # Stop strategies (cancel orders, save state)
+        # Do this BEFORE closing anything else — order cancellation is critical
         for strategy in self.strategies:
             try:
                 if strategy.is_running:
                     strategy.stop()
+                    logger.info(f"Strategy {strategy.strategy_name} stopped successfully")
             except Exception as e:
                 logger.error(f"Error stopping {strategy.strategy_name}: {e}")
+                # Last resort: try to cancel all orders directly via exchange
+                try:
+                    if hasattr(strategy, 'symbol'):
+                        self.primary_exchange.exchange.cancel_all_orders(strategy.symbol)
+                        logger.info(f"Emergency order cancellation for {strategy.symbol}")
+                except Exception as cancel_err:
+                    logger.error(f"Emergency cancellation also failed: {cancel_err}")
 
         # Close database
         self.db.close()
