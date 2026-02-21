@@ -288,7 +288,7 @@ class MomentumStrategy(BaseStrategy):
             return
 
         amount = risk_amount / risk_per_unit
-        cost_usd = amount * entry_price
+        cost_usd = risk_amount  # Actual capital at risk (not full notional value)
 
         # Risk check
         order_request = OrderRequest(
