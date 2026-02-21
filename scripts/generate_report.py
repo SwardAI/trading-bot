@@ -17,7 +17,6 @@ from src.core.database import Database
 from src.core.exchange import ExchangeManager
 from src.journal.performance import PerformanceTracker
 from src.journal.reporter import Reporter
-from src.risk.position_tracker import PositionTracker
 from src.risk.risk_manager import RiskManager
 
 
@@ -41,9 +40,8 @@ def main():
         if exc_config.get("enabled"):
             try:
                 exchange = ExchangeManager(name, exc_config)
-                position_tracker = PositionTracker(db, exchange)
                 risk_manager = RiskManager(
-                    config.get("risk_management", {}), position_tracker, db
+                    config.get("risk_management", {}), db, exchange
                 )
             except Exception:
                 pass  # Fall back to report without live balance
