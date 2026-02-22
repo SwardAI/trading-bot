@@ -151,11 +151,18 @@ class GridStrategy(BaseStrategy):
         self.logger.info(f"Grid stopped for {self.symbol}")
 
     def on_tick(self):
-        """Called every grid_check_interval — check fills, rebalance, stop loss."""
+        """Called every grid_check_interval — check fills, place pending orders, rebalance, stop loss."""
         if not self._running:
             return
 
         self._check_fills()
+
+        # Place any pending orders (e.g. from restart reconciliation or cancelled orders)
+        pending_count = sum(1 for l in self.grid_levels if l["status"] == "pending")
+        if pending_count > 0:
+            self._place_grid_orders()
+            self._save_state()
+
         self._check_rebalance()
         self._check_stop_loss()
 

@@ -133,6 +133,10 @@ class MomentumStrategy(BaseStrategy):
                 try:
                     signal = self._check_entry_signal(symbol)
                     if signal:
+                        # Spot markets can only go long — skip short signals
+                        if signal["side"] == "short":
+                            self.logger.debug(f"Skipping short signal for {symbol} (spot only)")
+                            continue
                         self._enter_position(symbol, signal)
                 except Exception as e:
                     self.logger.error(f"Error scanning {symbol}: {e}")
