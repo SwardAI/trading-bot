@@ -157,9 +157,13 @@ class GridStrategy(BaseStrategy):
 
         self._check_fills()
 
-        # Place any pending orders (e.g. from restart reconciliation or cancelled orders)
-        pending_count = sum(1 for l in self.grid_levels if l["status"] == "pending")
-        if pending_count > 0:
+        # Place any pending orders that can actually be placed
+        # (skip sells with no inventory — they'll be placed when buys fill)
+        placeable = sum(
+            1 for l in self.grid_levels
+            if l["status"] == "pending" and (l["side"] == "buy" or self.inventory_amount > 0)
+        )
+        if placeable > 0:
             self._place_grid_orders()
             self._save_state()
 
@@ -305,7 +309,10 @@ class GridStrategy(BaseStrategy):
         msg = f"Placed {placed} grid orders for {self.symbol}"
         if skipped_sells:
             msg += f" (skipped {skipped_sells} sells, no inventory)"
-        self.logger.info(msg)
+        if placed > 0:
+            self.logger.info(msg)
+        elif skipped_sells:
+            self.logger.debug(msg)
 
     # --- Fill detection ---
 
