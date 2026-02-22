@@ -239,11 +239,17 @@ class GridStrategy(BaseStrategy):
     def _place_grid_orders(self):
         """Place all pending grid orders, each through the risk manager."""
         placed = 0
+        skipped_sells = 0
         current_open = self._count_exchange_open_orders()
         max_to_place = max(0, self.max_open_orders - current_open)
 
         for level in self.grid_levels:
             if level["status"] != "pending":
+                continue
+
+            # Skip sell orders when we have no inventory to sell
+            if level["side"] == "sell" and self.inventory_amount <= 0:
+                skipped_sells += 1
                 continue
 
             if placed >= max_to_place:
@@ -296,7 +302,10 @@ class GridStrategy(BaseStrategy):
             except Exception as e:
                 self.logger.error(f"Failed to place grid order {level['side']} @ {level['price']}: {e}")
 
-        self.logger.info(f"Placed {placed} grid orders for {self.symbol}")
+        msg = f"Placed {placed} grid orders for {self.symbol}"
+        if skipped_sells:
+            msg += f" (skipped {skipped_sells} sells, no inventory)"
+        self.logger.info(msg)
 
     # --- Fill detection ---
 
