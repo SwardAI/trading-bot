@@ -23,11 +23,15 @@ class PositionTracker:
     Args:
         db: Database instance.
         exchange: ExchangeManager instance.
+        max_portfolio_usd: If set, cap the effective portfolio size for risk
+            calculations so the bot trades as if it has this amount even when
+            the actual exchange balance is higher (e.g. sandbox accounts).
     """
 
-    def __init__(self, db: Database, exchange: ExchangeManager):
+    def __init__(self, db: Database, exchange: ExchangeManager, max_portfolio_usd: float = 0):
         self.db = db
         self.exchange = exchange
+        self.max_portfolio_usd = max_portfolio_usd
         self._cached_balance: dict | None = None
         self._balance_fetched_at: float = 0
 
@@ -45,6 +49,9 @@ class PositionTracker:
         """Get current balance summary.
 
         Automatically refreshes if cache is older than BALANCE_CACHE_TTL.
+        If max_portfolio_usd is set, caps total_usd and scales free_usd
+        proportionally so all risk calculations behave as if the portfolio
+        is the capped size.
 
         Returns:
             Dict with total_usd, free_usd, used_usd, exposure_pct.
@@ -58,8 +65,18 @@ class PositionTracker:
         total = balance.get("total", {})
         free = balance.get("free", {})
 
-        total_usd = float(total.get("USDT", 0))
-        free_usd = float(free.get("USDT", 0))
+        raw_total_usd = float(total.get("USDT", 0))
+        raw_free_usd = float(free.get("USDT", 0))
+
+        # Apply portfolio cap if configured
+        if self.max_portfolio_usd > 0 and raw_total_usd > self.max_portfolio_usd:
+            scale = self.max_portfolio_usd / raw_total_usd
+            total_usd = self.max_portfolio_usd
+            free_usd = raw_free_usd * scale
+        else:
+            total_usd = raw_total_usd
+            free_usd = raw_free_usd
+
         used_usd = total_usd - free_usd
 
         return {

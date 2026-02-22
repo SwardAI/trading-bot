@@ -56,14 +56,18 @@ class RiskManager:
         self.max_correlated_pct = config.get("max_correlated_exposure_pct", 35)
         self.reserve_cash_pct = config.get("reserve_cash_pct", 20)
 
+        # Portfolio cap (for sandbox accounts with inflated balances)
+        self.max_portfolio_usd = config.get("max_portfolio_usd", 0)
+
         # Components
-        self.position_tracker = PositionTracker(db, exchange)
+        self.position_tracker = PositionTracker(db, exchange, self.max_portfolio_usd)
         self.circuit_breaker = CircuitBreaker(config, db)
 
+        cap_msg = f", portfolio_cap=${self.max_portfolio_usd:,.0f}" if self.max_portfolio_usd else ""
         logger.info(
             f"RiskManager initialized: max_exposure={self.max_total_exposure_pct}%, "
             f"max_per_pair={self.max_single_pair_pct}%, "
-            f"reserve={self.reserve_cash_pct}%"
+            f"reserve={self.reserve_cash_pct}%{cap_msg}"
         )
 
     def check(self, order: OrderRequest) -> RiskDecision:

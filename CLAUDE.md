@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Crypto quantitative trading bot running 24/7 on a VPS. Executes multiple uncorrelated strategies (grid trading, momentum, funding rate arbitrage) with centralized risk management.
 
-**Design Philosophy**: Market-neutral by default, small frequent trades, survive first/profit second, everything logged, modular strategies.
+**Design Philosophy**: Small frequent trades, survive first/profit second, everything logged, modular strategies. Currently spot-only (long positions only).
 
 ## Tech Stack
 
@@ -77,9 +77,11 @@ Key tables: `trades`, `account_snapshots`, `daily_metrics`, `grid_state`, `momen
 
 ### Momentum (Secondary)
 - Trend-following with 35-50% win rate but large winners
+- **Long-only on spot** — short signals are skipped (no futures trading yet)
 - Entry signals: EMA crossover + RSI + volume surge + ADX + MACD alignment
 - Requires higher timeframe confirmation (1h signal needs 4h trend agreement)
 - Dynamic trailing stops based on ATR
+- Position sized by risk: `cost_usd = risk_amount` (capital at risk), NOT notional value
 
 ### Funding Rate Arbitrage (Phase 2, requires $10K+)
 - Long spot + short perpetual futures = delta neutral
@@ -101,13 +103,30 @@ bot:
 
 ## Development Phases
 
-1. **Foundation**: Project setup, exchange connector, market data, database, logging
-2. **Grid Strategy**: Grid calculation, order placement, fill detection, rebalancing
-3. **Risk Management**: Position tracking, pre-trade checks, circuit breakers
-4. **Momentum Strategy**: Indicators, signal generation, trailing stops
-5. **Monitoring**: Telegram alerts, daily reports, trade journal
-6. **Backtesting**: Historical data, engine with fee/slippage modeling
-7. **Deployment**: Docker, VPS, hardening
+1. **Foundation**: Project setup, exchange connector, market data, database, logging ✅
+2. **Grid Strategy**: Grid calculation, order placement, fill detection, rebalancing ✅
+3. **Risk Management**: Position tracking, pre-trade checks, circuit breakers ✅
+4. **Momentum Strategy**: Indicators, signal generation, trailing stops ✅
+5. **Monitoring**: Telegram alerts, daily reports, trade journal ✅
+6. **Backtesting**: Historical data, engine with fee/slippage modeling (partial)
+7. **Deployment**: Docker, VPS, GitHub Actions CI/CD ✅
+8. **Production hardening**: Grid restart reconciliation, balance cache TTL, DB transactions, graceful shutdown ✅
+
+## Deployment
+
+- **VPS**: DigitalOcean droplet at 134.122.73.180
+- **Container**: `crypto-bot` via docker-compose in `~/trading`
+- **CI/CD**: Push to `main` triggers GitHub Actions → test → deploy
+- **Health check**: `ssh root@134.122.73.180 -i ~/.ssh/digitalocean 'bash ~/trading/scripts/health_check.sh'`
+- **Status**: Paper trading (sandbox mode) on Binance testnet
+
+## Architecture Gotchas
+
+- `load_all_configs()` returns a **flat** dict — keys are at top level, NOT nested under "settings"
+- `RiskManager(config, db, exchange)` — creates its own `PositionTracker` internally
+- `generate_report.py` runs via `docker exec` as a separate process — needs its own exchange connection
+- Grid `on_tick()` must place pending orders after checking fills (not just on startup)
+- Balance cache has 30s TTL to prevent stale risk checks
 
 ## Important Constraints
 

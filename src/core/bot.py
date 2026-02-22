@@ -282,15 +282,26 @@ class Bot:
             self.risk_manager.position_tracker.sync_with_exchange()
 
     def _take_snapshot(self):
-        """Record account balance snapshot to database."""
+        """Record account balance snapshot to database.
+
+        Uses the risk manager's capped balance when available so snapshots
+        reflect the effective portfolio size, not the raw sandbox balance.
+        """
         if not self.primary_exchange:
             return
 
         try:
-            balance = self.primary_exchange.fetch_balance()
-            total = float(balance.get("total", {}).get("USDT", 0))
-            free = float(balance.get("free", {}).get("USDT", 0))
-            used = total - free
+            # Use capped balance from risk manager if available
+            if self.risk_manager:
+                bal = self.risk_manager.position_tracker.get_balance()
+                total = bal["total_usd"]
+                free = bal["free_usd"]
+                used = bal["used_usd"]
+            else:
+                balance = self.primary_exchange.fetch_balance()
+                total = float(balance.get("total", {}).get("USDT", 0))
+                free = float(balance.get("free", {}).get("USDT", 0))
+                used = total - free
 
             now = datetime.now(timezone.utc).isoformat()
 

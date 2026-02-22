@@ -19,6 +19,7 @@ exchanges:
     rate_limit_ms: 100
 
 risk_management:
+  max_portfolio_usd: 10000  # Cap effective portfolio size (useful for paper trading with inflated sandbox balance)
   max_risk_per_trade_pct: 2.0
   max_order_size_usd: 500
   max_total_exposure_pct: 60
