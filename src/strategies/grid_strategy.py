@@ -158,11 +158,14 @@ class GridStrategy(BaseStrategy):
         self._check_fills()
 
         # Place any pending orders that can actually be placed
-        # (skip sells with no inventory — they'll be placed when buys fill)
-        placeable = sum(
-            1 for l in self.grid_levels
-            if l["status"] == "pending" and (l["side"] == "buy" or self.inventory_amount > 0)
+        pending_buys = sum(1 for l in self.grid_levels if l["status"] == "pending" and l["side"] == "buy")
+        pending_sells = sum(1 for l in self.grid_levels if l["status"] == "pending" and l["side"] == "sell")
+        has_sellable_inventory = self.inventory_amount > sum(
+            self.order_size_usd / l["price"]
+            for l in self.grid_levels
+            if l["side"] == "sell" and l["status"] == "open"
         )
+        placeable = pending_buys + (pending_sells if has_sellable_inventory else 0)
         if placeable > 0:
             self._place_grid_orders()
             self._save_state()
@@ -247,12 +250,23 @@ class GridStrategy(BaseStrategy):
         current_open = self._count_exchange_open_orders()
         max_to_place = max(0, self.max_open_orders - current_open)
 
+        # Track remaining sellable inventory to avoid placing more sells
+        # than we can cover (prevents "insufficient funds" errors)
+        open_sell_amount = sum(
+            self.order_size_usd / l["price"]
+            for l in self.grid_levels
+            if l["side"] == "sell" and l["status"] == "open"
+        )
+        remaining_sellable = max(0, self.inventory_amount - open_sell_amount)
+
         for level in self.grid_levels:
             if level["status"] != "pending":
                 continue
 
-            # Skip sell orders when we have no inventory to sell
-            if level["side"] == "sell" and self.inventory_amount <= 0:
+            amount = self.order_size_usd / level["price"]
+
+            # Skip sell orders when we don't have enough inventory
+            if level["side"] == "sell" and remaining_sellable < amount:
                 skipped_sells += 1
                 continue
 
@@ -260,7 +274,6 @@ class GridStrategy(BaseStrategy):
                 self.logger.warning(f"Open order limit reached ({current_open + placed}/{self.max_open_orders}), skipping remaining")
                 break
 
-            amount = self.order_size_usd / level["price"]
             cost_usd = self.order_size_usd
 
             # Check exchange minimum order size
@@ -302,6 +315,8 @@ class GridStrategy(BaseStrategy):
                 level["status"] = "open"
                 level["order_id"] = order["id"]
                 placed += 1
+                if level["side"] == "sell":
+                    remaining_sellable -= amount
                 self.logger.debug(f"Grid order placed: {level['side']} {amount:.6f} @ {level['price']}")
             except Exception as e:
                 self.logger.error(f"Failed to place grid order {level['side']} @ {level['price']}: {e}")
