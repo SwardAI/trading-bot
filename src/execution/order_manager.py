@@ -204,6 +204,27 @@ class OrderManager:
 
         now = datetime.now(timezone.utc).isoformat()
 
+        # Check if this order was already logged (prevent duplicates from retries/reconciliation)
+        exchange_order_id = order.get("id")
+        if exchange_order_id:
+            existing = self.db.fetch_one(
+                "SELECT id FROM trades WHERE exchange_order_id = ?",
+                (exchange_order_id,),
+            )
+            if existing:
+                logger.debug(f"Trade already logged for order {exchange_order_id}, skipping duplicate")
+                return {
+                    "id": existing["id"],
+                    "symbol": order.get("symbol"),
+                    "side": order.get("side"),
+                    "price": fill_price,
+                    "amount": amount,
+                    "cost_usd": cost,
+                    "fee_usd": fee_usd,
+                    "slippage_pct": slippage_pct,
+                    "exchange_order_id": exchange_order_id,
+                }
+
         cursor = self.db.execute(
             """INSERT INTO trades
             (timestamp, strategy, pair, side, order_type, price, amount, cost_usd,
@@ -220,7 +241,7 @@ class OrderManager:
                 cost,
                 fee_usd,
                 fee_info.get("currency"),
-                order.get("id"),
+                exchange_order_id,
                 slippage_pct,
                 linked_trade_id,
             ),

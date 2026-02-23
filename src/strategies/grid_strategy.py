@@ -68,11 +68,30 @@ class GridStrategy(BaseStrategy):
         self.total_round_trips: int = 0
         self.total_profit_usd: float = 0.0
 
+        # Price precision from exchange (will be set in start())
+        self._price_precision: int = 2
+
         self.logger.info(f"GridStrategy initialized for {self.symbol} ({self.grid_type}, {self.num_grids} levels)")
 
     def start(self):
         """Initialize grid: load saved state or calculate fresh grid from current price."""
         self._running = True
+
+        # Get price precision from exchange market info
+        try:
+            market = self.exchange.exchange.markets.get(self.symbol, {})
+            precision = market.get("precision", {})
+            # ccxt precision can be in different formats
+            price_prec = precision.get("price")
+            if isinstance(price_prec, int):
+                self._price_precision = price_prec
+            elif isinstance(price_prec, float):
+                # Some exchanges use decimal precision (e.g., 0.01 means 2 decimals)
+                import math
+                self._price_precision = int(-math.log10(price_prec)) if price_prec > 0 else 2
+            self.logger.debug(f"Using price precision {self._price_precision} for {self.symbol}")
+        except Exception as e:
+            self.logger.warning(f"Could not determine price precision for {self.symbol}: {e}, using default 2")
 
         # Try to load saved state
         if self._load_state():
@@ -206,7 +225,7 @@ class GridStrategy(BaseStrategy):
 
             if buy_price >= lower_bound:
                 levels.append({
-                    "price": round(buy_price, 2),
+                    "price": round(buy_price, self._price_precision),
                     "side": "buy",
                     "status": "pending",  # pending, open, filled
                     "order_id": None,
@@ -214,7 +233,7 @@ class GridStrategy(BaseStrategy):
 
             if sell_price <= upper_bound:
                 levels.append({
-                    "price": round(sell_price, 2),
+                    "price": round(sell_price, self._price_precision),
                     "side": "sell",
                     "status": "pending",
                     "order_id": None,
@@ -413,18 +432,18 @@ class GridStrategy(BaseStrategy):
         if fill_side == "buy":
             # Place sell above
             if self.grid_type == "geometric":
-                opposite_price = round(fill_price * (1 + self.grid_spacing_pct / 100), 2)
+                opposite_price = round(fill_price * (1 + self.grid_spacing_pct / 100), self._price_precision)
             else:
                 spacing = self.grid_center * (self.grid_spacing_pct / 100)
-                opposite_price = round(fill_price + spacing, 2)
+                opposite_price = round(fill_price + spacing, self._price_precision)
             opposite_side = "sell"
         else:
             # Place buy below
             if self.grid_type == "geometric":
-                opposite_price = round(fill_price / (1 + self.grid_spacing_pct / 100), 2)
+                opposite_price = round(fill_price / (1 + self.grid_spacing_pct / 100), self._price_precision)
             else:
                 spacing = self.grid_center * (self.grid_spacing_pct / 100)
-                opposite_price = round(fill_price - spacing, 2)
+                opposite_price = round(fill_price - spacing, self._price_precision)
             opposite_side = "buy"
 
         # Calculate P&L for completed round-trip (sell fills)
@@ -553,6 +572,28 @@ class GridStrategy(BaseStrategy):
         """
         # Cancel all existing grid orders
         self.order_manager.cancel_all_orders(self.symbol)
+
+        # Verify all orders are actually cancelled before proceeding
+        try:
+            remaining = self.exchange.fetch_open_orders(self.symbol)
+            if remaining:
+                self.logger.warning(
+                    f"Rebalance: {len(remaining)} orders still open after cancel_all, retrying..."
+                )
+                for order in remaining:
+                    try:
+                        self.exchange.cancel_order(order["id"], self.symbol)
+                    except Exception as e:
+                        self.logger.error(f"Failed to cancel order {order['id']}: {e}")
+
+                # Final check
+                still_open = self.exchange.fetch_open_orders(self.symbol)
+                if still_open:
+                    self.logger.error(
+                        f"Rebalance: {len(still_open)} orders STILL open, proceeding anyway (may cause issues)"
+                    )
+        except Exception as e:
+            self.logger.error(f"Failed to verify order cancellation: {e}")
 
         old_center = self.grid_center
         self.grid_center = new_center

@@ -106,8 +106,10 @@ CREATE TABLE IF NOT EXISTS momentum_positions (
 CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp);
 CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy);
 CREATE INDEX IF NOT EXISTS idx_trades_pair ON trades(pair);
+CREATE INDEX IF NOT EXISTS idx_trades_order_id ON trades(exchange_order_id);
 CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON account_snapshots(timestamp);
 CREATE INDEX IF NOT EXISTS idx_momentum_status ON momentum_positions(status);
+CREATE INDEX IF NOT EXISTS idx_grid_state_pair ON grid_state(pair);
 """
 
 

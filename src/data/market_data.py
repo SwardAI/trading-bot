@@ -1,9 +1,15 @@
+import time
+
 import pandas as pd
 
 from src.core.exchange import ExchangeManager
 from src.core.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+# Retry configuration for transient failures
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 1  # seconds, doubles each retry
 
 
 class MarketDataManager:
@@ -16,8 +22,35 @@ class MarketDataManager:
     def __init__(self, exchange: ExchangeManager):
         self.exchange = exchange
 
+    def _retry_fetch(self, fetch_func, *args, **kwargs):
+        """Execute a fetch function with retry logic for transient failures.
+
+        Args:
+            fetch_func: The function to call.
+            *args, **kwargs: Arguments to pass to fetch_func.
+
+        Returns:
+            Result from fetch_func.
+
+        Raises:
+            Exception: If all retries are exhausted.
+        """
+        last_error = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                return fetch_func(*args, **kwargs)
+            except Exception as e:
+                last_error = e
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                    logger.warning(f"Market data fetch failed (attempt {attempt}/{MAX_RETRIES}): {e}. Retrying in {delay}s")
+                    time.sleep(delay)
+                else:
+                    logger.error(f"Market data fetch failed after {MAX_RETRIES} attempts: {e}")
+        raise last_error
+
     def get_ohlcv(self, symbol: str, timeframe: str = "1h", limit: int = 100) -> pd.DataFrame:
-        """Fetch OHLCV candle data.
+        """Fetch OHLCV candle data with retry logic.
 
         Args:
             symbol: Trading pair (e.g. "BTC/USDT").
@@ -27,12 +60,12 @@ class MarketDataManager:
         Returns:
             DataFrame with columns: timestamp, open, high, low, close, volume.
         """
-        df = self.exchange.fetch_ohlcv(symbol, timeframe, limit)
+        df = self._retry_fetch(self.exchange.fetch_ohlcv, symbol, timeframe, limit)
         logger.debug(f"OHLCV fetched: {symbol} {timeframe} ({len(df)} candles)")
         return df
 
     def get_ticker(self, symbol: str) -> dict:
-        """Fetch current ticker data.
+        """Fetch current ticker data with retry logic.
 
         Args:
             symbol: Trading pair.
@@ -40,7 +73,7 @@ class MarketDataManager:
         Returns:
             Dict with bid, ask, last, baseVolume, quoteVolume.
         """
-        ticker = self.exchange.fetch_ticker(symbol)
+        ticker = self._retry_fetch(self.exchange.fetch_ticker, symbol)
         return {
             "symbol": symbol,
             "bid": ticker.get("bid"),
@@ -51,7 +84,7 @@ class MarketDataManager:
         }
 
     def get_orderbook(self, symbol: str, limit: int = 20) -> dict:
-        """Fetch orderbook with spread calculation.
+        """Fetch orderbook with spread calculation and retry logic.
 
         Args:
             symbol: Trading pair.
@@ -60,7 +93,7 @@ class MarketDataManager:
         Returns:
             Dict with bids, asks, spread, mid_price.
         """
-        ob = self.exchange.fetch_orderbook(symbol, limit)
+        ob = self._retry_fetch(self.exchange.fetch_orderbook, symbol, limit)
         bids = ob.get("bids", [])
         asks = ob.get("asks", [])
 

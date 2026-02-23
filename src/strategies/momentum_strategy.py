@@ -318,6 +318,15 @@ class MomentumStrategy(BaseStrategy):
             symbol: Trading pair.
             signal: Signal dict from _check_entry_signal.
         """
+        # Double-check DB for existing open position (handles restart edge case)
+        existing = self.db.fetch_one(
+            "SELECT id FROM momentum_positions WHERE pair = ? AND status = 'open'",
+            (symbol,),
+        )
+        if existing:
+            self.logger.warning(f"Skipping entry for {symbol}: open position already exists in DB (id={existing['id']})")
+            return
+
         entry_price = signal["entry_price"]
         atr = signal["atr"]
         side = signal["side"]

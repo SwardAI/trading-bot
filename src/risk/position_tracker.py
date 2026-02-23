@@ -32,7 +32,7 @@ class PositionTracker:
         self.db = db
         self.exchange = exchange
         self.max_portfolio_usd = max_portfolio_usd
-        self._cached_balance: dict | None = None
+        self._cached_balance: dict = {}  # Initialize as empty dict, not None
         self._balance_fetched_at: float = 0
 
     def refresh_balance(self) -> dict:
@@ -57,10 +57,21 @@ class PositionTracker:
             Dict with total_usd, free_usd, used_usd, exposure_pct.
         """
         if (
-            self._cached_balance is None
+            not self._cached_balance
             or (time.monotonic() - self._balance_fetched_at) > BALANCE_CACHE_TTL
         ):
-            self.refresh_balance()
+            try:
+                self.refresh_balance()
+            except Exception as e:
+                logger.error(f"Failed to refresh balance: {e}")
+                # Return safe defaults if we can't fetch and have no cache
+                if not self._cached_balance:
+                    return {
+                        "total_usd": 0.0,
+                        "free_usd": 0.0,
+                        "used_usd": 0.0,
+                        "exposure_pct": 0.0,
+                    }
         balance = self._cached_balance
         total = balance.get("total", {})
         free = balance.get("free", {})

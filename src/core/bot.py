@@ -378,11 +378,20 @@ class Bot:
         logger.info(f"Starting bot in {self.mode.upper()} mode...")
 
         # Load markets for all exchanges
+        markets_loaded = False
         for name, exchange in self.exchanges.items():
             try:
                 exchange.load_markets()
+                markets_loaded = True
+                logger.info(f"Markets loaded for {name}: {len(exchange.exchange.markets)} pairs available")
             except Exception as e:
                 logger.error(f"Failed to load markets for {name}: {e}")
+
+        if not markets_loaded:
+            logger.critical("No exchange markets loaded — cannot start strategies")
+            self.alerter.send_alert("Bot startup failed: could not load exchange markets", AlertLevel.CRITICAL)
+            self.running = False
+            return
 
         # Initialize strategies
         self._init_strategies()
@@ -421,9 +430,10 @@ class Bot:
         self.running = False
         logger.info("Stopping bot...")
 
-        # Stop scheduler first to prevent new ticks
+        # Stop scheduler and wait for running jobs to complete (up to 10s)
         if self.scheduler.running:
-            self.scheduler.shutdown(wait=False)
+            logger.info("Waiting for scheduled jobs to complete...")
+            self.scheduler.shutdown(wait=True)
 
         # Stop strategies (cancel orders, save state)
         # Do this BEFORE closing anything else — order cancellation is critical
