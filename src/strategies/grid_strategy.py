@@ -447,23 +447,22 @@ class GridStrategy(BaseStrategy):
             current_open = self._count_exchange_open_orders()
             if current_open >= self.max_open_orders:
                 self.logger.warning(f"Skipping opposite order: at exchange limit ({current_open}/{self.max_open_orders})")
-            else:
-                if decision.adjusted_amount:
-                    opp_amount = decision.adjusted_amount
-                try:
-                    order = self.exchange.create_order(
-                        self.symbol, "limit", opposite_side, opp_amount, opposite_price
+            # For sell orders, verify we have enough inventory to cover
+            elif opposite_side == "sell":
+                open_sell_amount = sum(
+                    self.order_size_usd / l["price"]
+                    for l in self.grid_levels
+                    if l["side"] == "sell" and l["status"] == "open"
+                )
+                if self.inventory_amount - open_sell_amount < opp_amount:
+                    self.logger.debug(
+                        f"Skipping opposite sell: insufficient inventory "
+                        f"({self.inventory_amount:.8f} - {open_sell_amount:.8f} open < {opp_amount:.8f} needed)"
                     )
-                    # Add new level to grid
-                    self.grid_levels.append({
-                        "price": opposite_price,
-                        "side": opposite_side,
-                        "status": "open",
-                        "order_id": order["id"],
-                    })
-                    self.logger.debug(f"Opposite order placed: {opposite_side} @ {opposite_price}")
-                except Exception as e:
-                    self.logger.error(f"Failed to place opposite order: {e}")
+                else:
+                    self._place_opposite_order(opposite_side, opp_amount, opposite_price, decision)
+            else:
+                self._place_opposite_order(opposite_side, opp_amount, opposite_price, decision)
         else:
             self.logger.warning(f"Risk rejected opposite order: {decision.reason}")
 
@@ -471,6 +470,24 @@ class GridStrategy(BaseStrategy):
         self.grid_levels = [l for l in self.grid_levels if l["status"] in ("open", "pending")]
 
         self._save_state()
+
+    def _place_opposite_order(self, side: str, amount: float, price: float, decision):
+        """Place an opposite grid order after a fill."""
+        if decision.adjusted_amount:
+            amount = decision.adjusted_amount
+        try:
+            order = self.exchange.create_order(
+                self.symbol, "limit", side, amount, price
+            )
+            self.grid_levels.append({
+                "price": price,
+                "side": side,
+                "status": "open",
+                "order_id": order["id"],
+            })
+            self.logger.debug(f"Opposite order placed: {side} @ {price}")
+        except Exception as e:
+            self.logger.error(f"Failed to place opposite order: {e}")
 
     def _update_inventory(self, amount_delta: float, price: float):
         """Update inventory tracking after a fill.
