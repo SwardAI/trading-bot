@@ -74,6 +74,10 @@ class MomentumStrategy(BaseStrategy):
         self.adx_min_strength = config.get("adx_min_strength", 25)
         self.volume_surge_multiplier = config.get("volume_surge_multiplier", 1.5)
 
+        # Scoring system: EMA direction is mandatory, then need min_signal_score
+        # out of 4 optional conditions (RSI, volume surge, ADX, MACD)
+        self.min_signal_score = config.get("min_signal_score", 4)
+
         # Position management
         self.risk_per_trade_pct = config.get("risk_per_trade_pct", 1.0)
         self.max_concurrent_positions = config.get("max_concurrent_positions", 3)
@@ -142,7 +146,10 @@ class MomentumStrategy(BaseStrategy):
                     self.logger.error(f"Error scanning {symbol}: {e}")
 
     def _check_entry_signal(self, symbol: str) -> dict | None:
-        """Check if all entry conditions are met for a symbol.
+        """Check if entry conditions are met for a symbol using a scoring system.
+
+        EMA direction (bullish) is mandatory. The other 4 conditions (RSI, volume,
+        ADX, MACD) each contribute 1 point. Entry requires min_signal_score points.
 
         Args:
             symbol: Trading pair.
@@ -169,9 +176,7 @@ class MomentumStrategy(BaseStrategy):
         if pd.isna(latest["ema_fast"]) or pd.isna(latest["adx"]) or pd.isna(latest["atr"]):
             return None
 
-        signals = {}
-
-        # 1. EMA crossover
+        # 1. EMA crossover / direction (MANDATORY)
         ema_cross_long = latest["ema_fast"] > latest["ema_slow"] and prev["ema_fast"] <= prev["ema_slow"]
         ema_cross_short = latest["ema_fast"] < latest["ema_slow"] and prev["ema_fast"] >= prev["ema_slow"]
         ema_bullish = latest["ema_fast"] > latest["ema_slow"]
@@ -183,8 +188,10 @@ class MomentumStrategy(BaseStrategy):
 
         # 3. Volume surge
         volume_surge = False
+        volume_ratio = 0.0
         if not pd.isna(latest["volume_sma"]) and latest["volume_sma"] > 0:
-            volume_surge = latest["volume"] > (latest["volume_sma"] * self.volume_surge_multiplier)
+            volume_ratio = float(latest["volume"] / latest["volume_sma"])
+            volume_surge = volume_ratio > self.volume_surge_multiplier
 
         # 4. ADX filter (trend strength)
         adx_strong = latest["adx"] > self.adx_min_strength if not pd.isna(latest["adx"]) else False
@@ -196,40 +203,48 @@ class MomentumStrategy(BaseStrategy):
             macd_long = latest["macd_histogram"] > 0 and latest["macd_histogram"] > prev["macd_histogram"]
             macd_short = latest["macd_histogram"] < 0 and latest["macd_histogram"] < prev["macd_histogram"]
 
-        # Check LONG signal (all must align)
-        if (ema_cross_long or ema_bullish) and rsi_long and volume_surge and adx_strong and macd_long:
-            # Higher timeframe confirmation
-            if self._confirm_higher_timeframe(symbol, "long"):
-                return {
-                    "side": "long",
-                    "entry_price": latest["close"],
-                    "atr": latest["atr"],
-                    "signals": {
-                        "ema_cross": ema_cross_long,
-                        "ema_bullish": ema_bullish,
-                        "rsi": float(latest["rsi"]),
-                        "adx": float(latest["adx"]),
-                        "volume_ratio": float(latest["volume"] / latest["volume_sma"]) if latest["volume_sma"] > 0 else 0,
-                        "macd_hist": float(latest["macd_histogram"]),
-                    },
-                }
+        # --- Scoring for LONG ---
+        if ema_bullish or ema_cross_long:
+            score = sum([rsi_long, volume_surge, adx_strong, macd_long])
+            conditions = (
+                f"EMA={'cross' if ema_cross_long else 'bull'} "
+                f"RSI={latest['rsi']:.1f}({'Y' if rsi_long else 'N'}) "
+                f"Vol={volume_ratio:.2f}x({'Y' if volume_surge else 'N'}) "
+                f"ADX={latest['adx']:.1f}({'Y' if adx_strong else 'N'}) "
+                f"MACD={'Y' if macd_long else 'N'}"
+            )
+            self.logger.info(f"Momentum scan {symbol}: LONG score={score}/{self.min_signal_score} [{conditions}]")
 
-        # Check SHORT signal (all must align)
-        if (ema_cross_short or ema_bearish) and rsi_short and volume_surge and adx_strong and macd_short:
-            if self._confirm_higher_timeframe(symbol, "short"):
-                return {
-                    "side": "short",
-                    "entry_price": latest["close"],
-                    "atr": latest["atr"],
-                    "signals": {
-                        "ema_cross": ema_cross_short,
-                        "ema_bearish": ema_bearish,
-                        "rsi": float(latest["rsi"]),
-                        "adx": float(latest["adx"]),
-                        "volume_ratio": float(latest["volume"] / latest["volume_sma"]) if latest["volume_sma"] > 0 else 0,
-                        "macd_hist": float(latest["macd_histogram"]),
-                    },
-                }
+            if score >= self.min_signal_score:
+                if self._confirm_higher_timeframe(symbol, "long"):
+                    return {
+                        "side": "long",
+                        "entry_price": latest["close"],
+                        "atr": latest["atr"],
+                        "signals": {
+                            "ema_cross": ema_cross_long,
+                            "ema_bullish": ema_bullish,
+                            "rsi": float(latest["rsi"]),
+                            "adx": float(latest["adx"]),
+                            "volume_ratio": volume_ratio,
+                            "macd_hist": float(latest["macd_histogram"]),
+                            "score": score,
+                        },
+                    }
+                else:
+                    self.logger.info(f"Momentum {symbol}: 4h confirmation failed for LONG")
+
+        # --- Scoring for SHORT ---
+        if ema_bearish or ema_cross_short:
+            score = sum([rsi_short, volume_surge, adx_strong, macd_short])
+            conditions = (
+                f"EMA={'cross' if ema_cross_short else 'bear'} "
+                f"RSI={latest['rsi']:.1f}({'Y' if rsi_short else 'N'}) "
+                f"Vol={volume_ratio:.2f}x({'Y' if volume_surge else 'N'}) "
+                f"ADX={latest['adx']:.1f}({'Y' if adx_strong else 'N'}) "
+                f"MACD={'Y' if macd_short else 'N'}"
+            )
+            self.logger.debug(f"Momentum scan {symbol}: SHORT score={score}/{self.min_signal_score} [{conditions}]")
 
         return None
 

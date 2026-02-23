@@ -14,12 +14,16 @@ momentum_strategy:
   ema_fast: 9
   ema_slow: 21
   rsi_period: 14
-  rsi_long_threshold: 55
-  rsi_short_threshold: 45
+  rsi_long_threshold: 50       # Lowered from 55 — above 50 = bullish bias
+  rsi_short_threshold: 50
   adx_period: 14
-  adx_min_strength: 25
-  volume_surge_multiplier: 1.5
+  adx_min_strength: 20         # Lowered from 25 — catches developing trends earlier
+  volume_surge_multiplier: 1.3  # Lowered from 1.5 — less strict volume filter
   atr_period: 14
+
+  # Scoring: EMA direction is mandatory, then need min_signal_score out of 4
+  # (RSI, volume surge, ADX strength, MACD histogram)
+  min_signal_score: 3           # 3 of 4 optional conditions must pass
 
   # Position management
   risk_per_trade_pct: 1.0
