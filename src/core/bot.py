@@ -138,11 +138,21 @@ class Bot:
         # Grid strategy tick — check fills, rebalance, stop loss
         grid_interval = sched_config.get("grid_check_interval_seconds", 5)
         self.scheduler.add_job(
-            self._tick_strategies,
+            self._tick_grid_strategies,
             "interval",
             seconds=grid_interval,
-            id="strategy_tick",
-            name="Strategy tick",
+            id="grid_tick",
+            name="Grid tick",
+        )
+
+        # Momentum strategy tick — separate from grid to avoid being blocked
+        momentum_interval = sched_config.get("momentum_check_interval_seconds", 60)
+        self.scheduler.add_job(
+            self._tick_momentum_strategies,
+            "interval",
+            seconds=momentum_interval,
+            id="momentum_tick",
+            name="Momentum tick",
         )
 
         # Risk check — circuit breaker evaluation
@@ -210,40 +220,48 @@ class Bot:
         )
 
         logger.info(
-            f"Scheduler configured: grid={grid_interval}s, risk={risk_interval}s, "
-            f"reconcile={recon_interval}s, snapshot={snapshot_interval}s"
+            f"Scheduler configured: grid={grid_interval}s, momentum={momentum_interval}s, "
+            f"risk={risk_interval}s, reconcile={recon_interval}s, snapshot={snapshot_interval}s"
         )
 
-    def _tick_strategies(self):
-        """Called on each tick — run on_tick() for all active strategies.
+    def _tick_strategy(self, strategy: BaseStrategy):
+        """Run on_tick() for a single strategy with failure tracking.
 
-        Tracks consecutive failures per strategy and stops it after 10 in a row
-        to prevent blind operation during API outages.
+        Tracks consecutive failures and stops after 10 in a row to prevent
+        blind operation during API outages.
         """
+        if not strategy.is_running:
+            return
+
+        try:
+            strategy.on_tick()
+            strategy._consecutive_failures = 0
+        except Exception as e:
+            strategy._consecutive_failures = getattr(strategy, '_consecutive_failures', 0) + 1
+            logger.error(f"Error in {strategy.strategy_name} tick ({strategy._consecutive_failures} consecutive): {e}", exc_info=True)
+
+            if strategy._consecutive_failures >= 10:
+                logger.critical(
+                    f"{strategy.strategy_name} failed {strategy._consecutive_failures} ticks in a row — "
+                    f"stopping to prevent stale orders"
+                )
+                self.alerter.send_alert(
+                    f"Strategy {strategy.strategy_name} stopped after {strategy._consecutive_failures} consecutive errors: {e}",
+                    AlertLevel.CRITICAL,
+                )
+                strategy.stop()
+
+    def _tick_grid_strategies(self):
+        """Tick all grid strategies (runs every grid_check_interval_seconds)."""
         for strategy in self.strategies:
-            if not strategy.is_running:
-                continue
+            if isinstance(strategy, GridStrategy):
+                self._tick_strategy(strategy)
 
-            try:
-                strategy.on_tick()
-                # Reset failure counter on success
-                if not hasattr(strategy, '_consecutive_failures'):
-                    strategy._consecutive_failures = 0
-                strategy._consecutive_failures = 0
-            except Exception as e:
-                strategy._consecutive_failures = getattr(strategy, '_consecutive_failures', 0) + 1
-                logger.error(f"Error in {strategy.strategy_name} tick ({strategy._consecutive_failures} consecutive): {e}", exc_info=True)
-
-                if strategy._consecutive_failures >= 10:
-                    logger.critical(
-                        f"{strategy.strategy_name} failed {strategy._consecutive_failures} ticks in a row — "
-                        f"stopping to prevent stale orders"
-                    )
-                    self.alerter.send_alert(
-                        f"Strategy {strategy.strategy_name} stopped after {strategy._consecutive_failures} consecutive errors: {e}",
-                        AlertLevel.CRITICAL,
-                    )
-                    strategy.stop()
+    def _tick_momentum_strategies(self):
+        """Tick all momentum strategies (runs every momentum_check_interval_seconds)."""
+        for strategy in self.strategies:
+            if isinstance(strategy, MomentumStrategy):
+                self._tick_strategy(strategy)
 
     def _risk_check(self):
         """Periodic risk evaluation — check circuit breakers and auto-resume."""
