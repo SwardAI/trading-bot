@@ -203,17 +203,22 @@ class MomentumStrategy(BaseStrategy):
             macd_long = latest["macd_histogram"] > 0 and latest["macd_histogram"] > prev["macd_histogram"]
             macd_short = latest["macd_histogram"] < 0 and latest["macd_histogram"] < prev["macd_histogram"]
 
+        # Build condition summary for logging
+        ema_dir = "BULL" if ema_bullish else "BEAR"
+        rsi_val = f"{latest['rsi']:.1f}" if not pd.isna(latest["rsi"]) else "NaN"
+        adx_val = f"{latest['adx']:.1f}" if not pd.isna(latest["adx"]) else "NaN"
+        macd_val = f"{latest['macd_histogram']:.4f}" if not pd.isna(latest["macd_histogram"]) else "NaN"
+
         # --- Scoring for LONG ---
         if ema_bullish or ema_cross_long:
             score = sum([rsi_long, volume_surge, adx_strong, macd_long])
-            conditions = (
-                f"EMA={'cross' if ema_cross_long else 'bull'} "
-                f"RSI={latest['rsi']:.1f}({'Y' if rsi_long else 'N'}) "
+            self.logger.info(
+                f"Momentum {symbol}: {ema_dir} score={score}/{self.min_signal_score} "
+                f"RSI={rsi_val}({'Y' if rsi_long else 'N'}) "
                 f"Vol={volume_ratio:.2f}x({'Y' if volume_surge else 'N'}) "
-                f"ADX={latest['adx']:.1f}({'Y' if adx_strong else 'N'}) "
-                f"MACD={'Y' if macd_long else 'N'}"
+                f"ADX={adx_val}({'Y' if adx_strong else 'N'}) "
+                f"MACD={macd_val}({'Y' if macd_long else 'N'})"
             )
-            self.logger.info(f"Momentum scan {symbol}: LONG score={score}/{self.min_signal_score} [{conditions}]")
 
             if score >= self.min_signal_score:
                 if self._confirm_higher_timeframe(symbol, "long"):
@@ -232,19 +237,15 @@ class MomentumStrategy(BaseStrategy):
                         },
                     }
                 else:
-                    self.logger.info(f"Momentum {symbol}: 4h confirmation failed for LONG")
+                    self.logger.info(f"Momentum {symbol}: 4h confirmation FAILED for LONG (score was {score})")
 
-        # --- Scoring for SHORT ---
-        if ema_bearish or ema_cross_short:
+        # --- Scoring for SHORT (log only, spot can't short) ---
+        elif ema_bearish or ema_cross_short:
             score = sum([rsi_short, volume_surge, adx_strong, macd_short])
-            conditions = (
-                f"EMA={'cross' if ema_cross_short else 'bear'} "
-                f"RSI={latest['rsi']:.1f}({'Y' if rsi_short else 'N'}) "
-                f"Vol={volume_ratio:.2f}x({'Y' if volume_surge else 'N'}) "
-                f"ADX={latest['adx']:.1f}({'Y' if adx_strong else 'N'}) "
-                f"MACD={'Y' if macd_short else 'N'}"
+            self.logger.info(
+                f"Momentum {symbol}: {ema_dir} score={score}/{self.min_signal_score} "
+                f"RSI={rsi_val} Vol={volume_ratio:.2f}x ADX={adx_val} (short, skip)"
             )
-            self.logger.debug(f"Momentum scan {symbol}: SHORT score={score}/{self.min_signal_score} [{conditions}]")
 
         return None
 
