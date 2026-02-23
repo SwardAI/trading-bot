@@ -351,11 +351,16 @@ class GridStrategy(BaseStrategy):
             # Order disappeared — verify it was actually filled (not cancelled/expired)
             try:
                 order = self.exchange.exchange.fetch_order(level["order_id"], self.symbol)
-                if order["status"] == "closed":
-                    self._handle_fill(level)
+                filled_amount = float(order.get("filled", 0))
+                if order["status"] == "closed" and filled_amount > 0:
+                    self._handle_fill(level, filled_amount)
                 elif order["status"] in ("canceled", "expired", "rejected"):
-                    if order.get("filled", 0) > 0:
-                        self._handle_fill(level)
+                    if filled_amount > 0:
+                        # Partial fill before cancellation — handle the filled portion
+                        self.logger.warning(
+                            f"Order {level['order_id']} {order['status']} with partial fill: {filled_amount}"
+                        )
+                        self._handle_fill(level, filled_amount)
                     else:
                         self.logger.info(f"Order {level['order_id']} {order['status']}, resetting to pending")
                         level["status"] = "pending"
@@ -363,17 +368,22 @@ class GridStrategy(BaseStrategy):
             except Exception as e:
                 self.logger.error(f"Failed to verify order {level['order_id']}: {e}, skipping")
 
-    def _handle_fill(self, level: dict):
+    def _handle_fill(self, level: dict, filled_amount: float | None = None):
         """Handle a filled grid order — create opposite order and update P&L.
 
         When a buy fills: place sell above it (grid_spacing above).
         When a sell fills: place buy below it (grid_spacing below).
+
+        Args:
+            level: Grid level dict that was filled.
+            filled_amount: Actual filled amount from exchange. If None, calculates from order_size_usd.
         """
         fill_side = level["side"]
         fill_price = level["price"]
-        amount = self.order_size_usd / fill_price
+        # Use actual filled amount if provided (handles partial fills correctly)
+        amount = filled_amount if filled_amount is not None else self.order_size_usd / fill_price
 
-        self.logger.info(f"Grid fill detected: {fill_side} @ {fill_price} ({self.symbol})")
+        self.logger.info(f"Grid fill detected: {fill_side} {amount:.6f} @ {fill_price} ({self.symbol})")
 
         # Log the fill and update inventory atomically
         now = datetime.now(timezone.utc).isoformat()
@@ -502,8 +512,14 @@ class GridStrategy(BaseStrategy):
             self.inventory_avg_price = total_cost / self.inventory_amount if self.inventory_amount > 0 else 0
         else:  # Sell
             self.inventory_amount += amount_delta  # amount_delta is negative
-            if self.inventory_amount <= 0:
+            if self.inventory_amount < 0:
+                self.logger.warning(
+                    f"Inventory went negative for {self.symbol}: {self.inventory_amount:.8f} "
+                    f"(sold more than tracked, possible desync)"
+                )
                 self.inventory_amount = 0
+                self.inventory_avg_price = 0
+            elif self.inventory_amount == 0:
                 self.inventory_avg_price = 0
 
     # --- Rebalancing ---
@@ -571,13 +587,37 @@ class GridStrategy(BaseStrategy):
                 f"STOP LOSS triggered for {self.symbol}: "
                 f"inventory loss {loss_pct:.1f}% exceeds limit {self.stop_loss_pct}%"
             )
-            # Cancel all orders and sell inventory at market
+            # Cancel all orders first
             self.order_manager.cancel_all_orders(self.symbol)
-            if self.inventory_amount > 0:
-                self.order_manager.place_order(
-                    self.symbol, "sell", self.inventory_amount,
-                    current_price, "grid",
-                )
+
+            # Fetch actual exchange balance to avoid selling more than we have
+            try:
+                balance = self.exchange.fetch_balance()
+                base_asset = self.symbol.split("/")[0]
+                actual_amount = float(balance.get("free", {}).get(base_asset, 0))
+
+                if actual_amount > 0:
+                    # Use the smaller of tracked inventory and actual balance
+                    sell_amount = min(self.inventory_amount, actual_amount)
+                    if sell_amount < self.inventory_amount:
+                        self.logger.warning(
+                            f"Stop loss selling {sell_amount:.8f} (actual) instead of "
+                            f"{self.inventory_amount:.8f} (tracked) {base_asset}"
+                        )
+                    self.order_manager.place_order(
+                        self.symbol, "sell", sell_amount,
+                        current_price, "grid",
+                    )
+                else:
+                    self.logger.warning(f"Stop loss: no {base_asset} balance to sell (tracking says {self.inventory_amount})")
+            except Exception as e:
+                self.logger.error(f"Stop loss balance check failed: {e}, attempting sell with tracked amount")
+                if self.inventory_amount > 0:
+                    self.order_manager.place_order(
+                        self.symbol, "sell", self.inventory_amount,
+                        current_price, "grid",
+                    )
+
             self.inventory_amount = 0
             self.inventory_avg_price = 0
             self._save_state()

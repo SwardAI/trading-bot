@@ -1,4 +1,5 @@
 import json
+import threading
 from datetime import datetime, timedelta, timezone
 
 from src.core.database import Database
@@ -35,6 +36,7 @@ class CircuitBreaker:
         self._level: str | None = None  # "daily", "weekly", "monthly"
         self._activated_at: datetime | None = None
         self._resumes_at: datetime | None = None
+        self._lock = threading.Lock()  # Protect concurrent check/activate
 
         # Check for active circuit breaker events in DB on startup
         self._load_state()
@@ -93,6 +95,8 @@ class CircuitBreaker:
     def check(self, portfolio_value: float) -> tuple[bool, str | None]:
         """Evaluate current P&L against circuit breaker limits.
 
+        Thread-safe: uses lock to prevent multiple concurrent activations.
+
         Args:
             portfolio_value: Current total portfolio value in USD.
 
@@ -102,28 +106,33 @@ class CircuitBreaker:
         if portfolio_value <= 0:
             return False, None
 
-        # Check monthly first (most severe)
-        monthly_pnl = self.get_monthly_pnl()
-        monthly_pct = (monthly_pnl / portfolio_value) * 100
-        if monthly_pct <= -self.monthly_limit:
-            self.activate("monthly", monthly_pnl)
-            return True, "monthly"
+        with self._lock:
+            # Already active — don't re-trigger
+            if self._active:
+                return False, None
 
-        # Weekly
-        weekly_pnl = self.get_weekly_pnl()
-        weekly_pct = (weekly_pnl / portfolio_value) * 100
-        if weekly_pct <= -self.weekly_limit:
-            self.activate("weekly", weekly_pnl)
-            return True, "weekly"
+            # Check monthly first (most severe)
+            monthly_pnl = self.get_monthly_pnl()
+            monthly_pct = (monthly_pnl / portfolio_value) * 100
+            if monthly_pct <= -self.monthly_limit:
+                self.activate("monthly", monthly_pnl)
+                return True, "monthly"
 
-        # Daily
-        daily_pnl = self.get_daily_pnl()
-        daily_pct = (daily_pnl / portfolio_value) * 100
-        if daily_pct <= -self.daily_limit:
-            self.activate("daily", daily_pnl)
-            return True, "daily"
+            # Weekly
+            weekly_pnl = self.get_weekly_pnl()
+            weekly_pct = (weekly_pnl / portfolio_value) * 100
+            if weekly_pct <= -self.weekly_limit:
+                self.activate("weekly", weekly_pnl)
+                return True, "weekly"
 
-        return False, None
+            # Daily
+            daily_pnl = self.get_daily_pnl()
+            daily_pct = (daily_pnl / portfolio_value) * 100
+            if daily_pct <= -self.daily_limit:
+                self.activate("daily", daily_pnl)
+                return True, "daily"
+
+            return False, None
 
     def activate(self, level: str, pnl_value: float):
         """Activate circuit breaker at the given level.

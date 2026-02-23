@@ -143,6 +143,8 @@ class Bot:
             seconds=grid_interval,
             id="grid_tick",
             name="Grid tick",
+            max_instances=1,
+            coalesce=True,
         )
 
         # Momentum strategy tick — separate from grid to avoid being blocked
@@ -153,6 +155,8 @@ class Bot:
             seconds=momentum_interval,
             id="momentum_tick",
             name="Momentum tick",
+            max_instances=1,
+            coalesce=True,
         )
 
         # Risk check — circuit breaker evaluation
@@ -163,6 +167,8 @@ class Bot:
             seconds=risk_interval,
             id="risk_check",
             name="Risk check",
+            max_instances=1,
+            coalesce=True,
         )
 
         # Order reconciliation — sync local state with exchange
@@ -173,6 +179,8 @@ class Bot:
             seconds=recon_interval,
             id="reconciliation",
             name="Order reconciliation",
+            max_instances=1,
+            coalesce=True,
         )
 
         # Account snapshot — hourly balance recording
@@ -183,6 +191,8 @@ class Bot:
             seconds=snapshot_interval,
             id="snapshot",
             name="Account snapshot",
+            max_instances=1,
+            coalesce=True,
         )
 
         # Periodic Telegram report

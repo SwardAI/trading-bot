@@ -600,7 +600,9 @@ class MomentumStrategy(BaseStrategy):
         exit_fee = actual_exit_price * position["amount"] * fee_pct
         pnl_usd -= (entry_fee + exit_fee)
 
-        pnl_pct = (pnl_usd / (position["entry_price"] * position["amount"])) * 100
+        # Guard against division by zero
+        notional = position["entry_price"] * position["amount"]
+        pnl_pct = (pnl_usd / notional * 100) if notional > 0 else 0.0
 
         # Update DB
         now = datetime.now(timezone.utc).isoformat()
@@ -634,20 +636,29 @@ class MomentumStrategy(BaseStrategy):
     def _is_in_cooldown(self, symbol: str) -> bool:
         """Check if a pair is in cooldown after a recent loss.
 
+        Cooldown is calculated from the MOST RECENT loss, not just any loss
+        within the cooldown window.
+
         Args:
             symbol: Trading pair.
 
         Returns:
             True if in cooldown period.
         """
-        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=self.cooldown_minutes)).isoformat()
+        # Find the most recent loss for this pair
         recent_loss = self.db.fetch_one(
-            """SELECT id FROM momentum_positions
-            WHERE pair = ? AND status = 'closed' AND pnl_usd < 0 AND exit_time > ?
+            """SELECT exit_time FROM momentum_positions
+            WHERE pair = ? AND status = 'closed' AND pnl_usd < 0
             ORDER BY exit_time DESC LIMIT 1""",
-            (symbol, cutoff),
+            (symbol,),
         )
-        return recent_loss is not None
+        if not recent_loss or not recent_loss["exit_time"]:
+            return False
+
+        # Check if cooldown has expired from that loss
+        loss_time = datetime.fromisoformat(recent_loss["exit_time"])
+        cooldown_expires = loss_time + timedelta(minutes=self.cooldown_minutes)
+        return datetime.now(timezone.utc) < cooldown_expires
 
     # --- State loading ---
 
