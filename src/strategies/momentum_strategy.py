@@ -91,6 +91,10 @@ class MomentumStrategy(BaseStrategy):
         self.positions: list[dict] = []
         self._entry_lock = threading.Lock()
 
+        # Track last signal state per pair to reduce log spam
+        self._last_signal_state: dict[str, str] = {}  # symbol -> "BULL"/"BEAR"/"NEUTRAL"
+        self._scan_count = 0  # Count scans to log summary periodically
+
         self.logger.info(
             f"MomentumStrategy initialized: {len(self.pairs)} pairs, "
             f"timeframe={self.timeframe}, confirmation={self.confirmation_timeframe}"
@@ -124,7 +128,11 @@ class MomentumStrategy(BaseStrategy):
 
     def _scan_for_entries(self):
         """Scan all pairs for entry signals."""
+        self._scan_count += 1
+        log_summary = (self._scan_count % 5 == 0)  # Log summary every 5 scans (~5 min)
+
         with self._entry_lock:
+            scan_results = []
             for symbol in self.pairs:
                 # Skip if already have position in this pair
                 if any(p["pair"] == symbol and p["status"] == "open" for p in self.positions):
@@ -135,7 +143,8 @@ class MomentumStrategy(BaseStrategy):
                     continue
 
                 try:
-                    signal = self._check_entry_signal(symbol)
+                    signal = self._check_entry_signal(symbol, log_summary)
+                    scan_results.append((symbol, signal))
                     if signal:
                         # Spot markets can only go long — skip short signals
                         if signal["side"] == "short":
@@ -145,7 +154,13 @@ class MomentumStrategy(BaseStrategy):
                 except Exception as e:
                     self.logger.error(f"Error scanning {symbol}: {e}")
 
-    def _check_entry_signal(self, symbol: str) -> dict | None:
+            # Log compact summary every 5 scans if all bearish
+            if log_summary and scan_results and not any(s for _, s in scan_results if s and s.get("side") == "long"):
+                bearish = [sym for sym, sig in scan_results if not sig]
+                if bearish:
+                    self.logger.info(f"Momentum scan: all {len(bearish)} pairs bearish/neutral (no longs)")
+
+    def _check_entry_signal(self, symbol: str, force_log: bool = False) -> dict | None:
         """Check if entry conditions are met for a symbol using a scoring system.
 
         EMA direction (bullish) is mandatory. The other 4 conditions (RSI, volume,
@@ -153,6 +168,7 @@ class MomentumStrategy(BaseStrategy):
 
         Args:
             symbol: Trading pair.
+            force_log: If True, log even if signal hasn't changed.
 
         Returns:
             Signal dict with side and details, or None if no signal.
@@ -212,13 +228,19 @@ class MomentumStrategy(BaseStrategy):
         # --- Scoring for LONG ---
         if ema_bullish or ema_cross_long:
             score = sum([rsi_long, volume_surge, adx_strong, macd_long])
-            self.logger.info(
-                f"Momentum {symbol}: {ema_dir} score={score}/{self.min_signal_score} "
-                f"RSI={rsi_val}({'Y' if rsi_long else 'N'}) "
-                f"Vol={volume_ratio:.2f}x({'Y' if volume_surge else 'N'}) "
-                f"ADX={adx_val}({'Y' if adx_strong else 'N'}) "
-                f"MACD={macd_val}({'Y' if macd_long else 'N'})"
-            )
+            current_state = "BULL"
+
+            # Only log if state changed or forced
+            prev_state = self._last_signal_state.get(symbol)
+            if prev_state != current_state or force_log:
+                self._last_signal_state[symbol] = current_state
+                self.logger.info(
+                    f"Momentum {symbol}: {ema_dir} score={score}/{self.min_signal_score} "
+                    f"RSI={rsi_val}({'Y' if rsi_long else 'N'}) "
+                    f"Vol={volume_ratio:.2f}x({'Y' if volume_surge else 'N'}) "
+                    f"ADX={adx_val}({'Y' if adx_strong else 'N'}) "
+                    f"MACD={macd_val}({'Y' if macd_long else 'N'})"
+                )
 
             if score >= self.min_signal_score:
                 if self._confirm_higher_timeframe(symbol, "long"):
@@ -239,13 +261,19 @@ class MomentumStrategy(BaseStrategy):
                 else:
                     self.logger.info(f"Momentum {symbol}: 4h confirmation FAILED for LONG (score was {score})")
 
-        # --- Scoring for SHORT (log only, spot can't short) ---
+        # --- Scoring for SHORT (log only on state change, spot can't short) ---
         elif ema_bearish or ema_cross_short:
             score = sum([rsi_short, volume_surge, adx_strong, macd_short])
-            self.logger.info(
-                f"Momentum {symbol}: {ema_dir} score={score}/{self.min_signal_score} "
-                f"RSI={rsi_val} Vol={volume_ratio:.2f}x ADX={adx_val} (short, skip)"
-            )
+            current_state = "BEAR"
+
+            # Only log if state changed or forced
+            prev_state = self._last_signal_state.get(symbol)
+            if prev_state != current_state or force_log:
+                self._last_signal_state[symbol] = current_state
+                self.logger.info(
+                    f"Momentum {symbol}: {ema_dir} score={score}/{self.min_signal_score} "
+                    f"RSI={rsi_val} Vol={volume_ratio:.2f}x ADX={adx_val} (short, skip)"
+                )
 
         return None
 

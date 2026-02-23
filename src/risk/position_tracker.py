@@ -160,6 +160,34 @@ class PositionTracker:
         )
         return total_exposure / balance["total_usd"] * 100
 
+    def get_total_position_exposure_usd(self) -> float:
+        """Get total exposure from all grid and momentum positions.
+
+        Unlike get_total_exposure_usd() which uses USDT balance arithmetic,
+        this queries actual position data from the database.
+
+        Returns:
+            Total USD value of all open positions.
+        """
+        total = 0.0
+
+        # Grid inventory across all pairs
+        grid_positions = self.db.fetch_all(
+            "SELECT pair, inventory_amount, inventory_avg_price FROM grid_state WHERE inventory_amount > 0"
+        )
+        for pos in grid_positions:
+            if pos["inventory_amount"] and pos["inventory_avg_price"]:
+                total += pos["inventory_amount"] * pos["inventory_avg_price"]
+
+        # Open momentum positions
+        momentum_positions = self.db.fetch_all(
+            "SELECT pair, amount, entry_price FROM momentum_positions WHERE status = 'open'"
+        )
+        for pos in momentum_positions:
+            total += pos["amount"] * pos["entry_price"]
+
+        return total
+
     def sync_with_exchange(self):
         """Reconcile local position data with exchange state.
 
@@ -169,8 +197,13 @@ class PositionTracker:
         logger.info("Syncing positions with exchange...")
         self.refresh_balance()
         balance = self.get_balance()
+
+        # Calculate actual exposure from positions (not just USDT balance)
+        position_exposure = self.get_total_position_exposure_usd()
+        exposure_pct = (position_exposure / balance["total_usd"] * 100) if balance["total_usd"] > 0 else 0
+
         logger.info(
             f"Balance synced: ${balance['total_usd']:.2f} total, "
             f"${balance['free_usd']:.2f} free, "
-            f"{balance['exposure_pct']:.1f}% exposure"
+            f"${position_exposure:.2f} in positions ({exposure_pct:.1f}%)"
         )
