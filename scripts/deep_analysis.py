@@ -51,11 +51,18 @@ def download_all_data():
     write_section("PHASE 1: DATA DOWNLOAD")
 
     # 1-minute data for grid (high-resolution backtest)
+    # Need ~2.1M candles for 4 years. Require at least 1.8M to consider complete.
     for symbol in ["BTC/USDT", "ETH/USDT"]:
         cached = load_cached_data("binance", symbol, "1m")
-        if cached is not None and len(cached) > 1_000_000:
+        if cached is not None and len(cached) > 1_800_000:
             log(f"  {symbol} 1m: {len(cached)} candles cached, skipping download")
         else:
+            # Delete incomplete cache if it exists
+            from src.backtest.data_fetcher import _get_cache_path
+            cache_file = _get_cache_path("binance", symbol, "1m")
+            if cache_file.exists():
+                log(f"  {symbol} 1m: removing incomplete cache ({len(cached) if cached is not None else 0} candles)")
+                cache_file.unlink()
             log(f"  Downloading {symbol} 1m from 2022-01-01 (this takes 30-60 min per symbol)...")
             t0 = time.time()
             df = download_ohlcv("binance", symbol, "1m", "2022-01-01")
@@ -506,25 +513,50 @@ def main():
     log(f"Results will be written to {REPORT_FILE}")
 
     # Phase 1: Download all data
-    download_all_data()
+    try:
+        download_all_data()
+    except Exception as e:
+        log(f"  PHASE 1 FAILED: {e} — continuing with available data")
 
     # Phase 2: Grid on 1-minute data
-    grid_1m_backtest()
+    try:
+        grid_1m_backtest()
+    except Exception as e:
+        log(f"  PHASE 2 FAILED: {e}")
 
     # Phase 3: Momentum on all symbols
-    momentum_results = momentum_all_symbols()
+    momentum_results = {}
+    try:
+        momentum_results = momentum_all_symbols()
+    except Exception as e:
+        log(f"  PHASE 3 FAILED: {e}")
 
     # Phase 4: Monte Carlo for momentum
-    monte_carlo_analysis(momentum_results)
+    try:
+        if momentum_results:
+            monte_carlo_analysis(momentum_results)
+        else:
+            log("  PHASE 4 SKIPPED: no momentum results from Phase 3")
+    except Exception as e:
+        log(f"  PHASE 4 FAILED: {e}")
 
     # Phase 5: Monte Carlo for grid
-    grid_monte_carlo()
+    try:
+        grid_monte_carlo()
+    except Exception as e:
+        log(f"  PHASE 5 FAILED: {e}")
 
     # Phase 6: Regime analysis
-    regime_analysis()
+    try:
+        regime_analysis()
+    except Exception as e:
+        log(f"  PHASE 6 FAILED: {e}")
 
     # Phase 7: Combined portfolio
-    combined_portfolio_simulation()
+    try:
+        combined_portfolio_simulation()
+    except Exception as e:
+        log(f"  PHASE 7 FAILED: {e}")
 
     # Final recommendations
     final_recommendations()

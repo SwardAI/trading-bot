@@ -52,12 +52,21 @@ def download_ohlcv(
 
     logger.info(f"Downloading {symbol} {timeframe} from {since}...")
 
+    consecutive_errors = 0
+    max_retries = 10
+
     while True:
         try:
             candles = exchange.fetch_ohlcv(symbol, timeframe, since=since_ts, limit=limit_per_request)
+            consecutive_errors = 0  # Reset on success
         except ccxt.BaseError as e:
-            logger.error(f"API error: {e}, retrying in 5s...")
-            time.sleep(5)
+            consecutive_errors += 1
+            backoff = min(5 * (2 ** (consecutive_errors - 1)), 300)  # 5s, 10s, 20s... up to 5min
+            logger.error(f"API error ({consecutive_errors}/{max_retries}): {e}, retrying in {backoff}s...")
+            if consecutive_errors >= max_retries:
+                logger.error(f"Max retries ({max_retries}) reached, saving partial data ({len(all_data)} candles)")
+                break
+            time.sleep(backoff)
             continue
 
         if not candles:
