@@ -15,6 +15,7 @@ from src.journal.performance import PerformanceTracker
 from src.journal.reporter import Reporter
 from src.risk.risk_manager import RiskManager
 from src.strategies.base_strategy import BaseStrategy
+from src.strategies.funding_strategy import FundingStrategy
 from src.strategies.grid_strategy import GridStrategy
 from src.strategies.momentum_strategy import MomentumStrategy
 
@@ -128,6 +129,36 @@ class Bot:
             self.strategies.append(strategy)
             logger.info(f"Momentum strategy registered for {len(momentum_config.get('pairs', []))} pairs")
 
+        # Funding rate arbitrage strategy — needs a separate futures exchange instance
+        funding_config = self.config.get("funding_strategy", {})
+        if funding_config.get("enabled") and self.primary_exchange and self.risk_manager and self.order_manager and self.market_data:
+            exchange_key = funding_config.get("exchanges", {}).get("futures", "binance")
+            exchange_conf = self.config.get("exchanges", {}).get(exchange_key, {})
+
+            if exchange_conf:
+                try:
+                    futures_exchange = ExchangeManager.create_futures_instance(exchange_key, exchange_conf)
+                    futures_exchange.load_markets()
+
+                    # Give market data access to the futures exchange for funding rate queries
+                    self.market_data.futures_exchange = futures_exchange
+
+                    strategy = FundingStrategy(
+                        config=funding_config,
+                        exchange=self.primary_exchange,
+                        db=self.db,
+                        risk_manager=self.risk_manager,
+                        order_manager=self.order_manager,
+                        market_data=self.market_data,
+                        futures_exchange=futures_exchange,
+                    )
+                    self.strategies.append(strategy)
+                    logger.info(f"Funding strategy registered for {len(funding_config.get('pairs', []))} pairs")
+                except Exception as e:
+                    logger.error(f"Failed to initialize funding strategy: {e}", exc_info=True)
+            else:
+                logger.warning("Funding strategy enabled but futures exchange config not found")
+
         if not self.strategies:
             logger.info("No strategies enabled")
 
@@ -155,6 +186,18 @@ class Bot:
             seconds=momentum_interval,
             id="momentum_tick",
             name="Momentum tick",
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # Funding strategy tick — check rates, manage positions
+        funding_interval = sched_config.get("funding_check_interval_seconds", 300)
+        self.scheduler.add_job(
+            self._tick_funding_strategies,
+            "interval",
+            seconds=funding_interval,
+            id="funding_tick",
+            name="Funding tick",
             max_instances=1,
             coalesce=True,
         )
@@ -231,7 +274,7 @@ class Bot:
 
         logger.info(
             f"Scheduler configured: grid={grid_interval}s, momentum={momentum_interval}s, "
-            f"risk={risk_interval}s, reconcile={recon_interval}s, "
+            f"funding={funding_interval}s, risk={risk_interval}s, reconcile={recon_interval}s, "
             f"snapshot={snapshot_interval}s"
         )
 
@@ -272,6 +315,12 @@ class Bot:
         """Tick all momentum strategies (runs every momentum_check_interval_seconds)."""
         for strategy in self.strategies:
             if isinstance(strategy, MomentumStrategy):
+                self._tick_strategy(strategy)
+
+    def _tick_funding_strategies(self):
+        """Tick all funding strategies (runs every funding_check_interval_seconds)."""
+        for strategy in self.strategies:
+            if isinstance(strategy, FundingStrategy):
                 self._tick_strategy(strategy)
 
     def _risk_check(self):

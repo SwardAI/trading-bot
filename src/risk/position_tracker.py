@@ -19,6 +19,11 @@ CORRELATED_GROUPS = {
 # Used to enforce max_correlated_exposure_pct across the entire portfolio.
 CRYPTO_ALL = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT", "LINK/USDT"]
 
+# Funding positions are delta-neutral (spot long + futures short).
+# Count only a fraction of notional as directional exposure to account
+# for basis risk, margin requirements, and fee drag.
+FUNDING_EXPOSURE_WEIGHT = 0.05  # 5% of notional counts as exposure
+
 # Maximum age of cached balance before a refresh is forced (seconds)
 BALANCE_CACHE_TTL = 10
 
@@ -144,6 +149,14 @@ class PositionTracker:
         if momentum:
             exposure += momentum["amount"] * momentum["entry_price"]
 
+        # Open funding positions (delta-neutral, reduced weight)
+        funding = self.db.fetch_one(
+            "SELECT notional_usd FROM funding_positions WHERE pair = ? AND status = 'open'",
+            (symbol,),
+        )
+        if funding and funding["notional_usd"]:
+            exposure += funding["notional_usd"] * FUNDING_EXPOSURE_WEIGHT
+
         return exposure
 
     def get_pair_exposure_pct(self, symbol: str) -> float:
@@ -207,6 +220,14 @@ class PositionTracker:
         )
         for pos in momentum_positions:
             total += pos["amount"] * pos["entry_price"]
+
+        # Open funding positions (delta-neutral, reduced weight)
+        funding_positions = self.db.fetch_all(
+            "SELECT notional_usd FROM funding_positions WHERE status = 'open'"
+        )
+        for pos in funding_positions:
+            if pos["notional_usd"]:
+                total += pos["notional_usd"] * FUNDING_EXPOSURE_WEIGHT
 
         return total
 

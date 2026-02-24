@@ -205,6 +205,25 @@ class RiskManager:
             except Exception as e:
                 logger.warning(f"Could not fetch price for {pos['pair']} unrealized P&L: {e}")
 
+        # Funding positions unrealized P&L (delta-neutral: spot + futures + collected funding)
+        funding_positions = self.db.fetch_all(
+            """SELECT pair, spot_entry_price, spot_entry_amount,
+                    futures_entry_price, futures_entry_amount,
+                    funding_collected_usd, total_fees_usd
+             FROM funding_positions WHERE status IN ('open', 'closing')"""
+        )
+        for pos in funding_positions:
+            try:
+                ticker = self.position_tracker.exchange.fetch_ticker(pos["pair"])
+                current_price = ticker.get("last", 0)
+                if current_price > 0:
+                    spot_pnl = (current_price - pos["spot_entry_price"]) * pos["spot_entry_amount"]
+                    futures_pnl = (pos["futures_entry_price"] - current_price) * pos["futures_entry_amount"]
+                    funding_income = (pos["funding_collected_usd"] or 0) - (pos["total_fees_usd"] or 0)
+                    unrealized += spot_pnl + futures_pnl + funding_income
+            except Exception as e:
+                logger.warning(f"Could not calculate funding unrealized P&L for {pos['pair']}: {e}")
+
         return unrealized
 
     def run_circuit_breaker_check(self):

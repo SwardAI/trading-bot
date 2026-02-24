@@ -41,6 +41,7 @@ class Reporter:
         # Strategy breakdowns
         grid_metrics = self.performance.get_strategy_metrics("grid", days=1)
         momentum_metrics = self.performance.get_strategy_metrics("momentum", days=1)
+        funding_metrics = self.performance.get_strategy_metrics("funding", days=1)
 
         # Grid round trips
         grid_rts = grid_metrics["num_wins"] + grid_metrics["num_losses"]
@@ -48,6 +49,9 @@ class Reporter:
         # Open positions
         open_momentum = self.db.fetch_all(
             "SELECT * FROM momentum_positions WHERE status = 'open'"
+        )
+        open_funding = self.db.fetch_all(
+            "SELECT * FROM funding_positions WHERE status IN ('open', 'closing')"
         )
         grid_states = self.db.fetch_all("SELECT * FROM grid_state")
 
@@ -86,11 +90,21 @@ class Reporter:
             "<b>Strategy Breakdown:</b>",
             f"  Grid:     {sign}${grid_metrics['net_pnl']:,.2f} ({grid_rts} round trips)",
             f"  Momentum: {sign}${momentum_metrics['net_pnl']:,.2f} ({momentum_metrics['num_wins']}W / {momentum_metrics['num_losses']}L)",
-            f"  Funding:  $0.00 (not active)",
         ]
 
+        # Funding line — show collected funding if active, otherwise "not active"
+        total_funding_collected = sum(p.get("funding_collected_usd", 0) or 0 for p in open_funding)
+        if open_funding or funding_metrics["net_pnl"] != 0:
+            funding_sign = "+" if funding_metrics["net_pnl"] >= 0 else ""
+            lines.append(
+                f"  Funding:  {funding_sign}${funding_metrics['net_pnl']:,.2f} "
+                f"({len(open_funding)} positions, ${total_funding_collected:,.2f} collected)"
+            )
+        else:
+            lines.append(f"  Funding:  $0.00 (not active)")
+
         # Open positions
-        if open_momentum or grid_states:
+        if open_momentum or open_funding or grid_states:
             lines.append("")
             lines.append(f"{pnl_emoji} <b>Open Positions:</b>")
             for gs in grid_states:
@@ -101,6 +115,14 @@ class Reporter:
                 lines.append(
                     f"  Momentum: {pos['side'].upper()} {pos['pair']} "
                     f"@ ${pos['entry_price']:,.2f} (stop: ${pos['current_stop']:,.2f})"
+                )
+            for pos in open_funding:
+                collected = pos.get("funding_collected_usd", 0) or 0
+                fees = pos.get("total_fees_usd", 0) or 0
+                net = collected - fees
+                lines.append(
+                    f"  Funding {pos['pair']}: ${pos['notional_usd']:,.0f} notional, "
+                    f"${collected:,.2f} collected (net ${net:,.2f})"
                 )
         # Risk status
         exposure_pct = balance_info.get("exposure_pct", 0)
@@ -144,6 +166,7 @@ class Reporter:
 
         grid_weekly = self.performance.get_strategy_metrics("grid", days=7)
         momentum_weekly = self.performance.get_strategy_metrics("momentum", days=7)
+        funding_weekly = self.performance.get_strategy_metrics("funding", days=7)
 
         sign = "+" if weekly_pnl >= 0 else ""
 
@@ -162,5 +185,26 @@ class Reporter:
             f"  Trades: {momentum_weekly['num_trades']} | Win rate: {momentum_weekly['win_rate']:.0f}%",
             f"  P&L: ${momentum_weekly['net_pnl']:,.2f} | Profit factor: {momentum_weekly['profit_factor']:.2f}",
         ]
+
+        # Only show funding section if there was activity
+        if funding_weekly["num_trades"] > 0 or funding_weekly["net_pnl"] != 0:
+            # Get total funding collected this week
+            weekly_funding_collected = self.db.fetch_one(
+                """SELECT COALESCE(SUM(funding_collected_usd), 0) as collected,
+                          COALESCE(SUM(total_fees_usd), 0) as fees
+                   FROM funding_positions
+                   WHERE entry_time >= datetime('now', '-7 days')
+                      OR status IN ('open', 'closing')"""
+            )
+            collected = weekly_funding_collected["collected"] if weekly_funding_collected else 0
+            fees = weekly_funding_collected["fees"] if weekly_funding_collected else 0
+
+            lines.extend([
+                "",
+                "<b>Funding:</b>",
+                f"  Positions opened: {funding_weekly['num_trades']}",
+                f"  Funding collected: ${collected:,.2f} | Fees: ${fees:,.2f}",
+                f"  Net P&L: ${funding_weekly['net_pnl']:,.2f}",
+            ])
 
         return "\n".join(lines)

@@ -9,10 +9,21 @@ funding_strategy:
     - "ETH/USDT"
     - "SOL/USDT"
 
-  min_funding_rate: 0.03
-  exit_funding_rate: 0.01
-  position_size_pct: 15
+  # Entry criteria
+  min_funding_rate: 0.03          # 0.03% per 8hr = ~13.7% annualized
+  funding_history_checks: 3       # Last N funding payments must all be positive
+
+  # Exit criteria
+  exit_funding_rate: 0.01         # Close when rate drops below this
+  exit_confirmations_needed: 2    # Rate must be low for N consecutive checks
+  max_hold_days: 7                # Force re-evaluation after this many days
+
+  # Position sizing
+  position_size_pct: 15           # % of portfolio per position
   max_positions: 2
 
-  max_basis_divergence_pct: 1.5
-  rebalance_threshold_pct: 2.0
+  # Safety limits
+  max_basis_divergence_pct: 1.5   # Max spot-futures price gap to tolerate
+  rebalance_threshold_pct: 2.0    # Rebalance if hedge ratio drifts
+  futures_leverage: 1             # Always 1x for funding arb — no added leverage
+  margin_warning_pct: 20          # Emergency close if margin ratio drops below this

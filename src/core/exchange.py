@@ -194,3 +194,100 @@ class ExchangeManager:
         except ccxt.BaseError as e:
             logger.error(f"Failed to load markets: {e}")
             raise
+
+    # --- Futures-specific methods ---
+
+    @classmethod
+    def create_futures_instance(cls, exchange_id: str, config: dict) -> "ExchangeManager":
+        """Create an ExchangeManager configured for perpetual futures trading.
+
+        Uses the same API keys and sandbox settings as the spot instance,
+        but sets defaultType to 'future' for ccxt futures operations.
+
+        Args:
+            exchange_id: Exchange name (e.g. "binance").
+            config: Exchange config dict (same as for spot).
+
+        Returns:
+            ExchangeManager configured for futures.
+        """
+        instance = cls.__new__(cls)
+        instance.exchange_id = exchange_id
+        instance.config = dict(config)
+
+        api_key = os.getenv(config.get("api_key_env", ""))
+        api_secret = os.getenv(config.get("api_secret_env", ""))
+
+        exchange_class = getattr(ccxt, exchange_id)
+        instance.exchange = exchange_class({
+            "apiKey": api_key,
+            "secret": api_secret,
+            "sandbox": config.get("sandbox", True),
+            "enableRateLimit": True,
+            "rateLimit": config.get("rate_limit_ms", 100),
+            "options": {"defaultType": "future"},
+        })
+
+        sandbox_label = "SANDBOX" if config.get("sandbox", True) else "LIVE"
+        logger.info(f"Futures exchange initialized: {exchange_id} ({sandbox_label})")
+        return instance
+
+    def fetch_funding_rate(self, symbol: str) -> dict:
+        """Fetch current funding rate for a perpetual futures symbol.
+
+        Args:
+            symbol: Futures symbol (e.g. "BTC/USDT:USDT").
+
+        Returns:
+            Dict with fundingRate, fundingTimestamp, etc.
+        """
+        try:
+            return self.exchange.fetch_funding_rate(symbol)
+        except ccxt.BaseError as e:
+            logger.error(f"Failed to fetch funding rate for {symbol}: {e}")
+            raise
+
+    def fetch_funding_rate_history(self, symbol: str, limit: int = 10) -> list[dict]:
+        """Fetch recent funding rate history for a futures symbol.
+
+        Args:
+            symbol: Futures symbol (e.g. "BTC/USDT:USDT").
+            limit: Number of historical rates to fetch.
+
+        Returns:
+            List of funding rate dicts, most recent first.
+        """
+        try:
+            return self.exchange.fetch_funding_rate_history(symbol, limit=limit)
+        except ccxt.BaseError as e:
+            logger.error(f"Failed to fetch funding rate history for {symbol}: {e}")
+            raise
+
+    def fetch_positions(self, symbols: list[str] | None = None) -> list[dict]:
+        """Fetch open futures positions.
+
+        Args:
+            symbols: Optional list of symbols to filter.
+
+        Returns:
+            List of position dicts from exchange.
+        """
+        try:
+            return self.exchange.fetch_positions(symbols)
+        except ccxt.BaseError as e:
+            logger.error(f"Failed to fetch positions: {e}")
+            raise
+
+    def set_leverage(self, leverage: int, symbol: str):
+        """Set leverage for a futures symbol.
+
+        Args:
+            leverage: Leverage multiplier (use 1 for funding arb).
+            symbol: Futures symbol.
+        """
+        try:
+            self.exchange.set_leverage(leverage, symbol)
+            logger.info(f"Leverage set to {leverage}x for {symbol}")
+        except ccxt.BaseError as e:
+            logger.error(f"Failed to set leverage for {symbol}: {e}")
+            raise

@@ -17,10 +17,12 @@ class MarketDataManager:
 
     Args:
         exchange: An initialized ExchangeManager instance.
+        futures_exchange: Optional futures-configured ExchangeManager for funding rate data.
     """
 
-    def __init__(self, exchange: ExchangeManager):
+    def __init__(self, exchange: ExchangeManager, futures_exchange: ExchangeManager | None = None):
         self.exchange = exchange
+        self.futures_exchange = futures_exchange
 
     def _retry_fetch(self, fetch_func, *args, **kwargs):
         """Execute a fetch function with retry logic for transient failures.
@@ -113,10 +115,62 @@ class MarketDataManager:
             "mid_price": mid_price,
         }
 
-    def get_funding_rate(self, symbol: str) -> float | None:
+    def get_funding_rate(self, symbol: str) -> dict | None:
         """Fetch current funding rate for a perpetual futures pair.
 
-        Stub for Phase 2 — returns None until futures trading is implemented.
+        Args:
+            symbol: Spot symbol (e.g. "BTC/USDT"). Converted to futures
+                    format ("BTC/USDT:USDT") internally.
+
+        Returns:
+            Dict with funding_rate (percentage), next_funding_time, futures_symbol,
+            or None if unavailable.
         """
-        logger.debug(f"Funding rate fetch not yet implemented for {symbol}")
-        return None
+        if not self.futures_exchange:
+            logger.debug("Funding rate fetch not available: no futures exchange configured")
+            return None
+
+        futures_symbol = f"{symbol}:USDT"
+        try:
+            rate_data = self._retry_fetch(
+                self.futures_exchange.fetch_funding_rate, futures_symbol
+            )
+            funding_rate = rate_data.get("fundingRate", 0) * 100  # Convert to percentage
+            return {
+                "symbol": symbol,
+                "futures_symbol": futures_symbol,
+                "funding_rate": funding_rate,
+                "next_funding_time": rate_data.get("nextFundingTimestamp"),
+            }
+        except Exception as e:
+            logger.error(f"Failed to fetch funding rate for {futures_symbol}: {e}")
+            return None
+
+    def get_funding_rate_history(self, symbol: str, limit: int = 10) -> list[dict]:
+        """Fetch recent funding rate history.
+
+        Args:
+            symbol: Spot symbol (e.g. "BTC/USDT").
+            limit: Number of historical periods.
+
+        Returns:
+            List of dicts with funding_rate (percentage) and timestamp.
+        """
+        if not self.futures_exchange:
+            return []
+
+        futures_symbol = f"{symbol}:USDT"
+        try:
+            history = self._retry_fetch(
+                self.futures_exchange.fetch_funding_rate_history, futures_symbol, limit
+            )
+            return [
+                {
+                    "funding_rate": h.get("fundingRate", 0) * 100,
+                    "timestamp": h.get("timestamp"),
+                }
+                for h in history
+            ]
+        except Exception as e:
+            logger.error(f"Failed to fetch funding history for {futures_symbol}: {e}")
+            return []

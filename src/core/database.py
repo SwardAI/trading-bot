@@ -102,6 +102,35 @@ CREATE TABLE IF NOT EXISTS momentum_positions (
     status TEXT DEFAULT 'open'
 );
 
+-- Funding rate arbitrage positions (delta-neutral: spot long + futures short)
+CREATE TABLE IF NOT EXISTS funding_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pair TEXT NOT NULL,
+    status TEXT DEFAULT 'open',
+    spot_entry_price REAL NOT NULL,
+    spot_entry_amount REAL NOT NULL,
+    spot_entry_order_id TEXT,
+    spot_exit_price REAL,
+    spot_exit_order_id TEXT,
+    futures_entry_price REAL NOT NULL,
+    futures_entry_amount REAL NOT NULL,
+    futures_entry_order_id TEXT,
+    futures_exit_price REAL,
+    futures_exit_order_id TEXT,
+    funding_collected_usd REAL DEFAULT 0,
+    funding_payments_count INTEGER DEFAULT 0,
+    last_funding_check DATETIME,
+    entry_funding_rate REAL NOT NULL,
+    entry_basis_pct REAL,
+    entry_time DATETIME NOT NULL,
+    exit_time DATETIME,
+    exit_reason TEXT,
+    total_fees_usd REAL DEFAULT 0,
+    basis_pnl_usd REAL DEFAULT 0,
+    net_pnl_usd REAL,
+    notional_usd REAL NOT NULL
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp);
 CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy);
@@ -110,6 +139,8 @@ CREATE INDEX IF NOT EXISTS idx_trades_order_id ON trades(exchange_order_id);
 CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON account_snapshots(timestamp);
 CREATE INDEX IF NOT EXISTS idx_momentum_status ON momentum_positions(status);
 CREATE INDEX IF NOT EXISTS idx_grid_state_pair ON grid_state(pair);
+CREATE INDEX IF NOT EXISTS idx_funding_status ON funding_positions(status);
+CREATE INDEX IF NOT EXISTS idx_funding_pair ON funding_positions(pair);
 """
 
 
