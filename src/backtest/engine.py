@@ -186,12 +186,14 @@ class BacktestEngine:
         self,
         df: pd.DataFrame,
         config: dict | None = None,
+        long_only: bool = True,
     ) -> BacktestResult:
         """Backtest the momentum strategy on historical data.
 
         Args:
             df: OHLCV DataFrame (should be at least 100 rows).
             config: Momentum config dict (uses defaults if None).
+            long_only: If True, skip short signals (matches spot-only live bot).
 
         Returns:
             BacktestResult with full statistics.
@@ -207,6 +209,10 @@ class BacktestEngine:
         vol_mult = config.get("volume_surge_multiplier", 1.5)
         atr_mult = config.get("trailing_stop_atr_multiplier", 1.5)
         risk_pct = config.get("risk_per_trade_pct", 1.0)
+
+        # Configurable signal requirements — which signals must be present to enter
+        # Default: all signals required (original behavior)
+        required = set(config.get("required_signals", ["ema", "rsi", "adx", "volume", "macd"]))
 
         # Compute indicators
         df = compute_all_indicators(df, config)
@@ -245,7 +251,7 @@ class BacktestEngine:
                 equity_curve.append(equity)
                 continue
 
-            # Check entry signals
+            # Check entry signals — each can be required or optional based on config
             ema_cross_long = row["ema_fast"] > row["ema_slow"] and prev["ema_fast"] <= prev["ema_slow"]
             ema_cross_short = row["ema_fast"] < row["ema_slow"] and prev["ema_fast"] >= prev["ema_slow"]
             rsi_ok_long = row["rsi"] > rsi_long if not pd.isna(row["rsi"]) else False
@@ -255,7 +261,15 @@ class BacktestEngine:
             macd_long = not pd.isna(row["macd_histogram"]) and not pd.isna(prev["macd_histogram"]) and row["macd_histogram"] > 0 and row["macd_histogram"] > prev["macd_histogram"]
             macd_short = not pd.isna(row["macd_histogram"]) and not pd.isna(prev["macd_histogram"]) and row["macd_histogram"] < 0 and row["macd_histogram"] < prev["macd_histogram"]
 
-            if ema_cross_long and rsi_ok_long and adx_ok and vol_ok and macd_long:
+            # Build long entry check based on required signals
+            long_ok = (ema_cross_long if "ema" in required else True)
+            long_ok = long_ok and (rsi_ok_long if "rsi" in required else True)
+            long_ok = long_ok and (adx_ok if "adx" in required else True)
+            long_ok = long_ok and (vol_ok if "volume" in required else True)
+            long_ok = long_ok and (macd_long if "macd" in required else True)
+
+            # Must have at least EMA cross to trigger entry (always required as base signal)
+            if long_ok and ema_cross_long:
                 # Enter long
                 atr = row["atr"]
                 stop_loss = close - (atr * atr_mult)
@@ -277,8 +291,16 @@ class BacktestEngine:
                         cost=amount * close, fee=fee, strategy="momentum",
                     ))
 
-            elif ema_cross_short and rsi_ok_short and adx_ok and vol_ok and macd_short:
-                # Enter short
+            elif not long_only and ema_cross_short:
+                short_ok = (rsi_ok_short if "rsi" in required else True)
+                short_ok = short_ok and (adx_ok if "adx" in required else True)
+                short_ok = short_ok and (vol_ok if "volume" in required else True)
+                short_ok = short_ok and (macd_short if "macd" in required else True)
+                if not short_ok:
+                    equity = capital + (self._position_value(position, close) if position else 0)
+                    equity_curve.append(equity)
+                    continue
+                # Enter short (skipped in long_only mode)
                 atr = row["atr"]
                 stop_loss = close + (atr * atr_mult)
                 risk_amount = capital * (risk_pct / 100)

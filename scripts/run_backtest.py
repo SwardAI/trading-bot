@@ -23,7 +23,9 @@ def main():
     parser.add_argument("--timeframe", default="1h", help="Candle timeframe")
     parser.add_argument("--exchange", default="binance", help="Exchange")
     parser.add_argument("--capital", type=float, default=10000, help="Starting capital (default: 10000)")
-    parser.add_argument("--since", default="2025-01-01", help="Start date if downloading data")
+    parser.add_argument("--since", default="2022-01-01", help="Start date if downloading data")
+    parser.add_argument("--long-only", action="store_true", default=True, help="Long-only mode for momentum (default: True)")
+    parser.add_argument("--allow-shorts", action="store_true", help="Allow short trades in momentum backtest")
 
     # Grid params
     parser.add_argument("--grid-spacing", type=float, default=0.5, help="Grid spacing %% (default: 0.5)")
@@ -54,7 +56,10 @@ def main():
             num_grids=args.num_grids,
         )
     elif args.strategy == "momentum":
-        result = engine.run_momentum_backtest(df)
+        long_only = not args.allow_shorts
+        result = engine.run_momentum_backtest(df, long_only=long_only)
+        if long_only:
+            print("  (Long-only mode — matching spot-only live bot)")
 
     print_backtest_report(result)
     compare_with_buy_and_hold(result, df)
