@@ -102,7 +102,6 @@ class Reporter:
                     f"  Momentum: {pos['side'].upper()} {pos['pair']} "
                     f"@ ${pos['entry_price']:,.2f} (stop: ${pos['current_stop']:,.2f})"
                 )
-
         # Risk status
         exposure_pct = balance_info.get("exposure_pct", 0)
         max_exposure = 60

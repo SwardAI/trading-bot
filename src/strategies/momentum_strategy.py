@@ -84,6 +84,9 @@ class MomentumStrategy(BaseStrategy):
         self.trailing_stop_atr_mult = config.get("trailing_stop_atr_multiplier", 1.5)
         self.time_stop_hours = config.get("time_stop_hours", 72)
 
+        # Filters
+        self.min_daily_volume_usd = config.get("min_daily_volume_usd", 0)
+
         # Cooldown
         self.cooldown_minutes = config.get("cooldown_after_loss_minutes", 60)
 
@@ -141,6 +144,17 @@ class MomentumStrategy(BaseStrategy):
                 # Check cooldown
                 if self._is_in_cooldown(symbol):
                     continue
+
+                # Check minimum daily volume (skip illiquid pairs)
+                if self.min_daily_volume_usd > 0:
+                    try:
+                        ticker = self.market_data.get_ticker(symbol)
+                        daily_volume_usd = (ticker.get("quoteVolume") or 0)
+                        if daily_volume_usd < self.min_daily_volume_usd:
+                            self.logger.debug(f"Skipping {symbol}: 24h volume ${daily_volume_usd:,.0f} < ${self.min_daily_volume_usd:,.0f} min")
+                            continue
+                    except Exception:
+                        pass  # If we can't check, proceed with signal check
 
                 try:
                     signal = self._check_entry_signal(symbol, log_summary)
@@ -603,10 +617,11 @@ class MomentumStrategy(BaseStrategy):
         else:
             pnl_usd = (position["entry_price"] - actual_exit_price) * position["amount"]
 
-        # Subtract fees (estimated)
-        fee_pct = 0.075 / 100  # maker fee
-        entry_fee = position["entry_price"] * position["amount"] * fee_pct
-        exit_fee = actual_exit_price * position["amount"] * fee_pct
+        # Subtract fees — use actual fee from exit trade, estimate entry conservatively
+        # Use 0.1% taker fee as worst-case estimate (order manager may use market orders)
+        fee_estimate = 0.1 / 100
+        entry_fee = position["entry_price"] * position["amount"] * fee_estimate
+        exit_fee = trade.get("fee", actual_exit_price * position["amount"] * fee_estimate) if trade else actual_exit_price * position["amount"] * fee_estimate
         pnl_usd -= (entry_fee + exit_fee)
 
         # Guard against division by zero

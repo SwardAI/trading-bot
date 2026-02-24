@@ -645,23 +645,27 @@ class GridStrategy(BaseStrategy):
                             f"Stop loss selling {sell_amount:.8f} (actual) instead of "
                             f"{self.inventory_amount:.8f} (tracked) {base_asset}"
                         )
-                    self.order_manager.place_order(
+                    result = self.order_manager.place_order(
                         self.symbol, "sell", sell_amount,
                         current_price, "grid",
                     )
+                    if result:
+                        self.inventory_amount = 0
+                        self.inventory_avg_price = 0
+                        self._save_state()
+                    else:
+                        self.logger.critical(
+                            f"STOP LOSS SELL FAILED for {self.symbol} — "
+                            f"still holding {sell_amount:.8f} {base_asset}. Manual intervention required."
+                        )
                 else:
                     self.logger.warning(f"Stop loss: no {base_asset} balance to sell (tracking says {self.inventory_amount})")
+                    self.inventory_amount = 0
+                    self.inventory_avg_price = 0
+                    self._save_state()
             except Exception as e:
-                self.logger.error(f"Stop loss balance check failed: {e}, attempting sell with tracked amount")
-                if self.inventory_amount > 0:
-                    self.order_manager.place_order(
-                        self.symbol, "sell", self.inventory_amount,
-                        current_price, "grid",
-                    )
-
-            self.inventory_amount = 0
-            self.inventory_avg_price = 0
-            self._save_state()
+                self.logger.critical(f"Stop loss execution failed: {e} — position may still be open, manual intervention required")
+                # Do NOT zero out inventory — position is still open
 
     # --- State persistence ---
 

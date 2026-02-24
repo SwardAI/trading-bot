@@ -92,13 +92,15 @@ class CircuitBreaker:
         )
         return result["total_pnl"] if result else 0.0
 
-    def check(self, portfolio_value: float) -> tuple[bool, str | None]:
+    def check(self, portfolio_value: float, unrealized_pnl: float = 0.0) -> tuple[bool, str | None]:
         """Evaluate current P&L against circuit breaker limits.
 
         Thread-safe: uses lock to prevent multiple concurrent activations.
+        Includes both realized (closed trades) and unrealized (open positions) P&L.
 
         Args:
             portfolio_value: Current total portfolio value in USD.
+            unrealized_pnl: Unrealized P&L from open positions (negative = losing).
 
         Returns:
             Tuple of (triggered, level). level is None if not triggered.
@@ -112,21 +114,21 @@ class CircuitBreaker:
                 return False, None
 
             # Check monthly first (most severe)
-            monthly_pnl = self.get_monthly_pnl()
+            monthly_pnl = self.get_monthly_pnl() + unrealized_pnl
             monthly_pct = (monthly_pnl / portfolio_value) * 100
             if monthly_pct <= -self.monthly_limit:
                 self.activate("monthly", monthly_pnl)
                 return True, "monthly"
 
             # Weekly
-            weekly_pnl = self.get_weekly_pnl()
+            weekly_pnl = self.get_weekly_pnl() + unrealized_pnl
             weekly_pct = (weekly_pnl / portfolio_value) * 100
             if weekly_pct <= -self.weekly_limit:
                 self.activate("weekly", weekly_pnl)
                 return True, "weekly"
 
             # Daily
-            daily_pnl = self.get_daily_pnl()
+            daily_pnl = self.get_daily_pnl() + unrealized_pnl
             daily_pct = (daily_pnl / portfolio_value) * 100
             if daily_pct <= -self.daily_limit:
                 self.activate("daily", daily_pnl)

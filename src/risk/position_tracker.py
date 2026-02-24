@@ -12,7 +12,7 @@ CORRELATED_GROUPS = {
 }
 
 # Maximum age of cached balance before a refresh is forced (seconds)
-BALANCE_CACHE_TTL = 30
+BALANCE_CACHE_TTL = 10
 
 
 class PositionTracker:

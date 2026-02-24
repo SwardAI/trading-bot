@@ -231,7 +231,8 @@ class Bot:
 
         logger.info(
             f"Scheduler configured: grid={grid_interval}s, momentum={momentum_interval}s, "
-            f"risk={risk_interval}s, reconcile={recon_interval}s, snapshot={snapshot_interval}s"
+            f"risk={risk_interval}s, reconcile={recon_interval}s, "
+            f"snapshot={snapshot_interval}s"
         )
 
     def _tick_strategy(self, strategy: BaseStrategy):

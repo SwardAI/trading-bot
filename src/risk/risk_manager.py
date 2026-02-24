@@ -161,17 +161,69 @@ class RiskManager:
             adjusted_amount=adjusted_amount,
         )
 
+    def _calculate_unrealized_pnl(self) -> float:
+        """Calculate unrealized P&L from all open positions at current prices.
+
+        Queries grid inventory and momentum positions, fetches current prices,
+        and returns the total mark-to-market P&L.
+
+        Returns:
+            Unrealized P&L in USD (negative = losing).
+        """
+        unrealized = 0.0
+
+        # Grid inventory unrealized P&L
+        grid_positions = self.db.fetch_all(
+            "SELECT pair, inventory_amount, inventory_avg_price FROM grid_state WHERE inventory_amount > 0"
+        )
+        for pos in grid_positions:
+            if pos["inventory_amount"] and pos["inventory_avg_price"]:
+                try:
+                    ticker = self.position_tracker.exchange.fetch_ticker(pos["pair"])
+                    current_price = ticker.get("last", 0)
+                    if current_price > 0:
+                        unrealized += (current_price - pos["inventory_avg_price"]) * pos["inventory_amount"]
+                except Exception as e:
+                    logger.warning(f"Could not fetch price for {pos['pair']} unrealized P&L: {e}")
+
+        # Momentum positions unrealized P&L
+        momentum_positions = self.db.fetch_all(
+            "SELECT pair, side, amount, entry_price FROM momentum_positions WHERE status = 'open'"
+        )
+        for pos in momentum_positions:
+            try:
+                ticker = self.position_tracker.exchange.fetch_ticker(pos["pair"])
+                current_price = ticker.get("last", 0)
+                if current_price > 0:
+                    if pos["side"] == "long":
+                        unrealized += (current_price - pos["entry_price"]) * pos["amount"]
+                    else:
+                        unrealized += (pos["entry_price"] - current_price) * pos["amount"]
+            except Exception as e:
+                logger.warning(f"Could not fetch price for {pos['pair']} unrealized P&L: {e}")
+
+        return unrealized
+
     def run_circuit_breaker_check(self):
         """Periodic check — evaluate P&L against circuit breaker limits.
 
         Called by the scheduler every 60 seconds.
+        Includes both realized and unrealized P&L for accurate risk assessment.
         Returns the circuit breaker status for alerting.
         """
         balance = self.position_tracker.get_balance()
-        triggered, level = self.circuit_breaker.check(balance["total_usd"])
+
+        # Calculate unrealized P&L from open positions
+        try:
+            unrealized_pnl = self._calculate_unrealized_pnl()
+        except Exception as e:
+            logger.error(f"Failed to calculate unrealized P&L: {e}")
+            unrealized_pnl = 0.0
+
+        triggered, level = self.circuit_breaker.check(balance["total_usd"], unrealized_pnl)
 
         if triggered:
-            logger.critical(f"Circuit breaker triggered: {level}")
+            logger.critical(f"Circuit breaker triggered: {level} (unrealized P&L: ${unrealized_pnl:.2f})")
 
         return triggered, level
 
