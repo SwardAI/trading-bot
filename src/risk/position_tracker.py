@@ -6,10 +6,18 @@ from src.core.logger import setup_logger
 
 logger = setup_logger("risk.position_tracker")
 
-# Pairs considered highly correlated for exposure grouping
+# Pairs considered highly correlated for exposure grouping.
+# All crypto assets are heavily correlated during drawdowns —
+# BTC drops 10%, altcoins drop 15-30%. Group them so the risk
+# manager caps total crypto exposure, not just per-pair.
 CORRELATED_GROUPS = {
     "crypto_major": ["BTC/USDT", "ETH/USDT"],
+    "crypto_alt": ["SOL/USDT", "AVAX/USDT", "LINK/USDT"],
 }
+
+# Master group: ALL crypto is correlated during crashes.
+# Used to enforce max_correlated_exposure_pct across the entire portfolio.
+CRYPTO_ALL = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT", "LINK/USDT"]
 
 # Maximum age of cached balance before a refresh is forced (seconds)
 BALANCE_CACHE_TTL = 10
@@ -149,6 +157,9 @@ class PositionTracker:
     def get_correlated_exposure_pct(self, symbol: str) -> float:
         """Get combined exposure for all pairs correlated with the given symbol.
 
+        All crypto assets are treated as correlated during market stress.
+        If the symbol is in CRYPTO_ALL, returns exposure across ALL crypto pairs.
+
         Args:
             symbol: Trading pair to check correlations for.
 
@@ -159,12 +170,12 @@ class PositionTracker:
         if balance["total_usd"] <= 0:
             return 0.0
 
-        # Find which correlation group this symbol belongs to
-        correlated_symbols = [symbol]
-        for group_symbols in CORRELATED_GROUPS.values():
-            if symbol in group_symbols:
-                correlated_symbols = group_symbols
-                break
+        # All crypto is correlated during crashes — check full master list
+        if symbol in CRYPTO_ALL:
+            correlated_symbols = CRYPTO_ALL
+        else:
+            # Unknown pair: just return its own exposure
+            correlated_symbols = [symbol]
 
         total_exposure = sum(
             self.get_pair_exposure_usd(s) for s in correlated_symbols

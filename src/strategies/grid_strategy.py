@@ -1,4 +1,5 @@
 import json
+import threading
 from datetime import datetime, timezone
 
 from src.core.database import Database
@@ -70,6 +71,10 @@ class GridStrategy(BaseStrategy):
 
         # Price precision from exchange (will be set in start())
         self._price_precision: int = 2
+
+        # Thread lock — protects grid_levels, inventory_amount, inventory_avg_price
+        # from concurrent mutation (scheduler tick vs reconciliation vs rebalance)
+        self._state_lock = threading.Lock()
 
         self.logger.info(f"GridStrategy initialized for {self.symbol} ({self.grid_type}, {self.num_grids} levels)")
 
@@ -174,23 +179,24 @@ class GridStrategy(BaseStrategy):
         if not self._running:
             return
 
-        self._check_fills()
+        with self._state_lock:
+            self._check_fills()
 
-        # Place any pending orders that can actually be placed
-        pending_buys = sum(1 for l in self.grid_levels if l["status"] == "pending" and l["side"] == "buy")
-        pending_sells = sum(1 for l in self.grid_levels if l["status"] == "pending" and l["side"] == "sell")
-        has_sellable_inventory = self.inventory_amount > sum(
-            self.order_size_usd / l["price"]
-            for l in self.grid_levels
-            if l["side"] == "sell" and l["status"] == "open"
-        )
-        placeable = pending_buys + (pending_sells if has_sellable_inventory else 0)
-        if placeable > 0:
-            self._place_grid_orders()
-            self._save_state()
+            # Place any pending orders that can actually be placed
+            pending_buys = sum(1 for l in self.grid_levels if l["status"] == "pending" and l["side"] == "buy")
+            pending_sells = sum(1 for l in self.grid_levels if l["status"] == "pending" and l["side"] == "sell")
+            has_sellable_inventory = self.inventory_amount > sum(
+                self.order_size_usd / l["price"]
+                for l in self.grid_levels
+                if l["side"] == "sell" and l["status"] == "open"
+            )
+            placeable = pending_buys + (pending_sells if has_sellable_inventory else 0)
+            if placeable > 0:
+                self._place_grid_orders()
+                self._save_state()
 
-        self._check_rebalance()
-        self._check_stop_loss()
+            self._check_rebalance()
+            self._check_stop_loss()
 
     # --- Grid calculation ---
 
@@ -454,8 +460,8 @@ class GridStrategy(BaseStrategy):
             self.total_round_trips += 1
             # Update the trade record with P&L
             self.db.execute(
-                "UPDATE trades SET pnl_usd = ?, linked_trade_id = ? WHERE id = ?",
-                (pnl_usd, fill_trade_id, fill_trade_id),
+                "UPDATE trades SET pnl_usd = ? WHERE id = ?",
+                (pnl_usd, fill_trade_id),
             )
             self.logger.info(f"Round-trip completed: P&L ${pnl_usd:.2f} (total: ${self.total_profit_usd:.2f})")
 

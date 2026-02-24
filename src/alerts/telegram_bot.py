@@ -68,19 +68,12 @@ class TelegramAlerter:
         else:
             logger.info(f"TELEGRAM ALERT: {message}")
 
-        # Send to Telegram
+        # Send to Telegram — always create a fresh event loop since APScheduler
+        # runs callbacks in background threads which have no default event loop.
+        # Using asyncio.get_event_loop() is deprecated in Python 3.10+ and
+        # raises RuntimeError in 3.12+ when called from non-main threads.
         if self._bot and self.chat_id:
             try:
-                asyncio.get_event_loop()
-                asyncio.get_event_loop().run_until_complete(
-                    self._bot.send_message(
-                        chat_id=self.chat_id,
-                        text=full_message,
-                        parse_mode="HTML",
-                    )
-                )
-            except RuntimeError:
-                # No event loop running, create one
                 loop = asyncio.new_event_loop()
                 try:
                     loop.run_until_complete(

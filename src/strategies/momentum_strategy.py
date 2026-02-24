@@ -597,6 +597,10 @@ class MomentumStrategy(BaseStrategy):
     def _exit_position(self, position: dict, exit_price: float, reason: str):
         """Close a momentum position and record results.
 
+        CRITICAL: Only marks position as closed if the sell order actually executes.
+        If the order fails, the position stays open so the risk system continues
+        tracking it and the next tick will retry the exit.
+
         Args:
             position: Position dict.
             exit_price: Price to exit at.
@@ -609,7 +613,16 @@ class MomentumStrategy(BaseStrategy):
             exit_price, "momentum",
         )
 
-        actual_exit_price = trade["price"] if trade else exit_price
+        if not trade:
+            self.logger.critical(
+                f"FAILED to exit momentum position {position['pair']} "
+                f"({position['side']} {position['amount']:.6f} @ entry {position['entry_price']:.2f}). "
+                f"Reason was: {reason}. Position remains OPEN — will retry next tick. "
+                f"Manual intervention may be needed."
+            )
+            return
+
+        actual_exit_price = trade["price"]
 
         # Calculate P&L
         if position["side"] == "long":
@@ -621,7 +634,7 @@ class MomentumStrategy(BaseStrategy):
         # Use 0.1% taker fee as worst-case estimate (order manager may use market orders)
         fee_estimate = 0.1 / 100
         entry_fee = position["entry_price"] * position["amount"] * fee_estimate
-        exit_fee = trade.get("fee", actual_exit_price * position["amount"] * fee_estimate) if trade else actual_exit_price * position["amount"] * fee_estimate
+        exit_fee = trade.get("fee", actual_exit_price * position["amount"] * fee_estimate) if isinstance(trade.get("fee"), (int, float)) else actual_exit_price * position["amount"] * fee_estimate
         pnl_usd -= (entry_fee + exit_fee)
 
         # Guard against division by zero
@@ -639,11 +652,10 @@ class MomentumStrategy(BaseStrategy):
         )
 
         # Update trade record with P&L
-        if trade:
-            self.db.execute(
-                "UPDATE trades SET pnl_usd = ? WHERE id = ?",
-                (pnl_usd, trade["id"]),
-            )
+        self.db.execute(
+            "UPDATE trades SET pnl_usd = ? WHERE id = ?",
+            (pnl_usd, trade["id"]),
+        )
 
         # Remove from active positions
         position["status"] = "closed"

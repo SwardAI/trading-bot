@@ -79,6 +79,14 @@ class OrderManager:
                     if adjusted_price != price:
                         logger.info(f"Adjusting {order_id} price: {price} -> {adjusted_price}")
                         self.exchange.cancel_order(order_id, symbol)
+
+                        # Log partial fill from cancelled order and reduce remaining amount
+                        partial_filled = filled_order.get("filled", 0)
+                        if partial_filled > 0:
+                            self._log_trade(filled_order, strategy, expected_price, linked_trade_id)
+                            amount = amount - partial_filled
+                            logger.info(f"Partial fill {partial_filled} logged, {amount} remaining")
+
                         order = self.exchange.create_order(symbol, "limit", side, amount, adjusted_price)
                         order_id = order["id"]
 

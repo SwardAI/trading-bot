@@ -10,7 +10,7 @@ grid_strategy:
       lower_bound_pct: 10
       rebalance_trigger_pct: 8
       take_profit_pct: null
-      stop_loss_pct: 15
+      stop_loss_pct: 8
 
     - symbol: "ETH/USDT"
       grid_type: "geometric"
@@ -20,7 +20,7 @@ grid_strategy:
       upper_bound_pct: 12
       lower_bound_pct: 12
       rebalance_trigger_pct: 10
-      stop_loss_pct: 15
+      stop_loss_pct: 8
 
   max_open_orders: 40
   min_profit_after_fees: 0.15

@@ -100,8 +100,11 @@ class RiskManager:
                 f"Order size ${order.cost_usd:.2f} exceeds hard cap ${self.max_order_size_usd}"
             )
 
-        # 2. Total exposure check
-        current_exposure = self.position_tracker.get_total_exposure_pct()
+        # 2. Total exposure check — use DB-based position tracking (not USDT balance
+        # arithmetic) for consistency with per-pair checks below. Balance arithmetic
+        # (total - free = used) can be skewed by non-trading USDT usage.
+        current_exposure_usd = self.position_tracker.get_total_position_exposure_usd()
+        current_exposure = (current_exposure_usd / total_usd * 100) if total_usd > 0 else 0
         new_exposure = current_exposure + (order.cost_usd / total_usd * 100)
         if new_exposure > self.max_total_exposure_pct:
             return RiskDecision(
