@@ -336,6 +336,240 @@ class BacktestEngine:
             "momentum", df, trades, equity_curve, final_capital,
         )
 
+    def run_breakout_backtest(
+        self,
+        df: pd.DataFrame,
+        config: dict | None = None,
+        long_only: bool = True,
+    ) -> BacktestResult:
+        """Backtest a Donchian breakout strategy on historical data.
+
+        Noise-resistant trend following: enters when price breaks above the
+        N-period highest high, exits via chandelier stop (highest high - K*ATR)
+        or when price drops below M-period lowest low.
+
+        Args:
+            df: OHLCV DataFrame with columns: timestamp, open, high, low, close, volume.
+            config: Strategy config dict. Keys:
+                - breakout_period: Lookback for entry channel (default 20)
+                - exit_period: Lookback for exit channel (default 10)
+                - atr_period: ATR calculation period (default 14)
+                - atr_stop_mult: Chandelier stop multiplier (default 3.0)
+                - adx_period: ADX period (default 14)
+                - adx_min: Minimum ADX for trend confirmation (default 20)
+                - volume_period: Volume MA period (default 20)
+                - volume_mult: Volume surge multiplier (default 1.0, 1.0=no filter)
+                - risk_per_trade_pct: % of capital risked per trade (default 1.0)
+                - cooldown_bars: Bars to wait after exit before re-entry (default 5)
+            long_only: If True, skip short signals.
+
+        Returns:
+            BacktestResult with full statistics.
+        """
+        import numpy as np
+
+        if config is None:
+            config = {}
+
+        breakout_period = config.get("breakout_period", 20)
+        exit_period = config.get("exit_period", 10)
+        atr_period = config.get("atr_period", 14)
+        atr_stop_mult = config.get("atr_stop_mult", 3.0)
+        adx_period = config.get("adx_period", 14)
+        adx_min = config.get("adx_min", 20)
+        volume_period = config.get("volume_period", 20)
+        volume_mult = config.get("volume_mult", 1.0)
+        risk_pct = config.get("risk_per_trade_pct", 1.0)
+        cooldown_bars = config.get("cooldown_bars", 5)
+
+        # Pre-compute indicators using vectorized operations
+        import ta
+
+        df = df.copy()
+        df["highest_high"] = df["high"].rolling(window=breakout_period).max()
+        df["lowest_low"] = df["low"].rolling(window=exit_period).min()
+        df["atr"] = ta.volatility.average_true_range(
+            df["high"], df["low"], df["close"], window=atr_period,
+        )
+        df["adx"] = ta.trend.adx(
+            df["high"], df["low"], df["close"], window=adx_period,
+        )
+        df["volume_ma"] = df["volume"].rolling(window=volume_period).mean()
+
+        # Also compute the previous bar's highest high for breakout detection
+        df["prev_highest"] = df["highest_high"].shift(1)
+        df["prev_lowest"] = df["lowest_low"].shift(1)
+
+        capital = self.initial_capital
+        equity_curve = [capital]
+        trades = []
+        position = None  # {side, entry_price, amount, stop_loss, highest_since_entry}
+        bars_since_exit = cooldown_bars  # Start ready to trade
+
+        lookback = max(breakout_period, exit_period, atr_period, adx_period, volume_period)
+
+        for i in range(lookback + 1, len(df)):
+            row = df.iloc[i]
+            close = row["close"]
+            high = row["high"]
+            low = row["low"]
+            atr = row["atr"]
+
+            # Skip if indicators not ready
+            if pd.isna(atr) or pd.isna(row["adx"]) or pd.isna(row["prev_highest"]):
+                equity_curve.append(capital)
+                continue
+
+            # Manage existing position
+            if position:
+                # Update highest price since entry (for chandelier stop)
+                if position["side"] == "long":
+                    if high > position["highest_since_entry"]:
+                        position["highest_since_entry"] = high
+                    # Chandelier stop: highest high since entry - K * ATR
+                    chandelier_stop = position["highest_since_entry"] - atr_stop_mult * atr
+                    # Use the better (higher) of chandelier or initial stop
+                    effective_stop = max(chandelier_stop, position["stop_loss"])
+                    # Also check exit channel (close below exit_period low)
+                    exit_channel = row["prev_lowest"] if not pd.isna(row["prev_lowest"]) else 0
+
+                    if close <= effective_stop or close < exit_channel:
+                        # Exit
+                        exit_price = close
+                        amount = position["amount"]
+                        fee = amount * exit_price * self.taker_fee
+                        pnl = (exit_price - position["entry_price"]) * amount - fee
+                        capital += pnl
+                        trades.append(BacktestTrade(
+                            timestamp=row["timestamp"], side="sell",
+                            price=exit_price, amount=amount,
+                            cost=amount * exit_price, fee=fee, pnl=pnl,
+                            strategy="breakout",
+                        ))
+                        position = None
+                        bars_since_exit = 0
+
+                elif position["side"] == "short":
+                    if low < position["lowest_since_entry"]:
+                        position["lowest_since_entry"] = low
+                    chandelier_stop = position["lowest_since_entry"] + atr_stop_mult * atr
+                    effective_stop = min(chandelier_stop, position["stop_loss"])
+                    exit_channel = row["prev_highest"] if not pd.isna(row["prev_highest"]) else float("inf")
+
+                    if close >= effective_stop or close > exit_channel:
+                        exit_price = close
+                        amount = position["amount"]
+                        fee = amount * exit_price * self.taker_fee
+                        pnl = (position["entry_price"] - exit_price) * amount - fee
+                        capital += pnl
+                        trades.append(BacktestTrade(
+                            timestamp=row["timestamp"], side="buy",
+                            price=exit_price, amount=amount,
+                            cost=amount * exit_price, fee=fee, pnl=pnl,
+                            strategy="breakout",
+                        ))
+                        position = None
+                        bars_since_exit = 0
+
+                equity = capital + (self._position_value(position, close) if position else 0)
+                equity_curve.append(equity)
+                continue
+
+            # Cooldown after exit
+            bars_since_exit += 1
+            if bars_since_exit < cooldown_bars:
+                equity_curve.append(capital)
+                continue
+
+            # Check entry signals
+            adx_ok = row["adx"] > adx_min
+            vol_ok = (
+                row["volume"] > row["volume_ma"] * volume_mult
+                if not pd.isna(row["volume_ma"]) and row["volume_ma"] > 0
+                else True
+            )
+
+            # Long breakout: close breaks above previous period's highest high
+            prev_high = row["prev_highest"]
+            if close > prev_high and adx_ok and vol_ok:
+                # Enter long
+                stop_loss = close - atr_stop_mult * atr
+                risk_per_unit = close - stop_loss
+                if risk_per_unit > 0:
+                    risk_amount = capital * (risk_pct / 100)
+                    amount = risk_amount / risk_per_unit
+                    cost = amount * close
+                    fee = cost * self.taker_fee
+                    if cost + fee <= capital:
+                        capital -= fee
+                        position = {
+                            "side": "long",
+                            "entry_price": close,
+                            "amount": amount,
+                            "stop_loss": stop_loss,
+                            "highest_since_entry": high,
+                            "atr": atr,
+                        }
+                        trades.append(BacktestTrade(
+                            timestamp=row["timestamp"], side="buy",
+                            price=close, amount=amount,
+                            cost=cost, fee=fee, strategy="breakout",
+                        ))
+
+            # Short breakout: close breaks below previous period's lowest low
+            elif not long_only:
+                prev_low = row["prev_lowest"]
+                if not pd.isna(prev_low) and close < prev_low and adx_ok and vol_ok:
+                    stop_loss = close + atr_stop_mult * atr
+                    risk_per_unit = stop_loss - close
+                    if risk_per_unit > 0:
+                        risk_amount = capital * (risk_pct / 100)
+                        amount = risk_amount / risk_per_unit
+                        cost = amount * close
+                        fee = cost * self.taker_fee
+                        if cost + fee <= capital:
+                            capital -= fee
+                            position = {
+                                "side": "short",
+                                "entry_price": close,
+                                "amount": amount,
+                                "stop_loss": stop_loss,
+                                "lowest_since_entry": low,
+                                "atr": atr,
+                            }
+                            trades.append(BacktestTrade(
+                                timestamp=row["timestamp"], side="sell",
+                                price=close, amount=amount,
+                                cost=cost, fee=fee, strategy="breakout",
+                            ))
+
+            equity = capital + (self._position_value(position, close) if position else 0)
+            equity_curve.append(equity)
+
+        # Close any remaining position
+        if position:
+            final_close = df.iloc[-1]["close"]
+            amount = position["amount"]
+            fee = amount * final_close * self.taker_fee
+            if position["side"] == "long":
+                pnl = (final_close - position["entry_price"]) * amount - fee
+            else:
+                pnl = (position["entry_price"] - final_close) * amount - fee
+            capital += pnl
+            trades.append(BacktestTrade(
+                timestamp=df.iloc[-1]["timestamp"],
+                side="sell" if position["side"] == "long" else "buy",
+                price=final_close, amount=amount,
+                cost=amount * final_close, fee=fee, pnl=pnl,
+                strategy="breakout",
+            ))
+
+        final_capital = capital
+
+        return self._build_result(
+            "breakout", df, trades, equity_curve, final_capital,
+        )
+
     def _calc_grid_prices(self, center: float, spacing_pct: float, num: int, side: str) -> list[float]:
         """Calculate grid price levels."""
         prices = []
