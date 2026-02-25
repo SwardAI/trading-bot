@@ -1,3 +1,4 @@
+import csv
 import os
 import time
 from pathlib import Path
@@ -11,6 +12,8 @@ logger = setup_logger("backtest.data_fetcher")
 
 DATA_DIR = Path("data/historical")
 
+COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
+
 
 def download_ohlcv(
     exchange_id: str = "binance",
@@ -21,7 +24,9 @@ def download_ohlcv(
 ) -> pd.DataFrame:
     """Download historical OHLCV data from an exchange.
 
-    Downloads in chunks respecting rate limits, caches to CSV.
+    Streams chunks directly to CSV to keep memory low (works on 1GB VPS).
+    Supports resuming partial downloads by reading the last timestamp from
+    an existing cache file.
 
     Args:
         exchange_id: Exchange name.
@@ -34,67 +39,105 @@ def download_ohlcv(
         DataFrame with columns: timestamp, open, high, low, close, volume.
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Check cache
     cache_file = _get_cache_path(exchange_id, symbol, timeframe)
-    if cache_file.exists():
-        logger.info(f"Loading cached data from {cache_file}")
-        df = pd.read_csv(cache_file, parse_dates=["timestamp"])
-        logger.info(f"Loaded {len(df)} candles from cache")
-        return df
 
     # Download from exchange
     exchange = getattr(ccxt, exchange_id)({"enableRateLimit": True})
     exchange.load_markets()
 
     since_ts = exchange.parse8601(f"{since}T00:00:00Z")
-    all_data = []
+    total_rows = 0
+
+    # Resume support: if cache file exists, read last timestamp and continue
+    if cache_file.exists():
+        last_ts = _get_last_timestamp(cache_file)
+        if last_ts is not None:
+            since_ts = last_ts + 1
+            total_rows = sum(1 for _ in open(cache_file)) - 1  # minus header
+            logger.info(f"Resuming download from {total_rows} existing candles")
+
+    # Open file in append mode (or write mode if new)
+    is_new_file = not cache_file.exists() or total_rows == 0
+    f = open(cache_file, "a" if not is_new_file else "w", newline="")
+    writer = csv.writer(f)
+
+    if is_new_file:
+        writer.writerow(COLUMNS)
 
     logger.info(f"Downloading {symbol} {timeframe} from {since}...")
 
     consecutive_errors = 0
     max_retries = 10
 
-    while True:
-        try:
-            candles = exchange.fetch_ohlcv(symbol, timeframe, since=since_ts, limit=limit_per_request)
-            consecutive_errors = 0  # Reset on success
-        except ccxt.BaseError as e:
-            consecutive_errors += 1
-            backoff = min(5 * (2 ** (consecutive_errors - 1)), 300)  # 5s, 10s, 20s... up to 5min
-            logger.error(f"API error ({consecutive_errors}/{max_retries}): {e}, retrying in {backoff}s...")
-            if consecutive_errors >= max_retries:
-                logger.error(f"Max retries ({max_retries}) reached, saving partial data ({len(all_data)} candles)")
+    try:
+        while True:
+            try:
+                candles = exchange.fetch_ohlcv(symbol, timeframe, since=since_ts, limit=limit_per_request)
+                consecutive_errors = 0
+            except ccxt.BaseError as e:
+                consecutive_errors += 1
+                backoff = min(5 * (2 ** (consecutive_errors - 1)), 300)
+                logger.error(f"API error ({consecutive_errors}/{max_retries}): {e}, retrying in {backoff}s...")
+                if consecutive_errors >= max_retries:
+                    logger.error(f"Max retries ({max_retries}) reached, saved {total_rows} candles so far")
+                    break
+                time.sleep(backoff)
+                continue
+
+            if not candles:
                 break
-            time.sleep(backoff)
-            continue
 
-        if not candles:
-            break
+            # Convert timestamps and write directly to CSV
+            for c in candles:
+                ts = pd.to_datetime(c[0], unit="ms", utc=True).isoformat()
+                writer.writerow([ts, c[1], c[2], c[3], c[4], c[5]])
 
-        all_data.extend(candles)
-        since_ts = candles[-1][0] + 1  # Start from next candle
+            total_rows += len(candles)
+            since_ts = candles[-1][0] + 1
 
-        logger.info(f"  Downloaded {len(all_data)} candles (last: {candles[-1][0]})")
+            # Flush every 10K candles so data isn't lost on crash
+            if total_rows % 10_000 < limit_per_request:
+                f.flush()
 
-        if len(candles) < limit_per_request:
-            break  # No more data
+            logger.info(f"  Downloaded {total_rows} candles (last: {candles[-1][0]})")
 
-        time.sleep(exchange.rateLimit / 1000)
+            if len(candles) < limit_per_request:
+                break
 
-    if not all_data:
+            time.sleep(exchange.rateLimit / 1000)
+    finally:
+        f.close()
+
+    if total_rows == 0:
         logger.warning(f"No data downloaded for {symbol}")
-        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+        return pd.DataFrame(columns=COLUMNS)
 
-    df = pd.DataFrame(all_data, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-    df = df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    logger.info(f"Saved {total_rows} candles to {cache_file}")
 
-    # Save cache
-    df.to_csv(cache_file, index=False)
-    logger.info(f"Saved {len(df)} candles to {cache_file}")
+    # Read back from disk (memory-efficient: only at point of use)
+    return pd.read_csv(cache_file, parse_dates=["timestamp"])
 
-    return df
+
+def _get_last_timestamp(cache_file: Path) -> int | None:
+    """Read the last timestamp (ms) from a CSV cache file for resume support."""
+    try:
+        # Read just the last line efficiently
+        with open(cache_file, "rb") as f:
+            f.seek(0, 2)  # End of file
+            size = f.tell()
+            if size < 100:
+                return None
+            # Read last 200 bytes to find the last complete line
+            f.seek(max(0, size - 200))
+            lines = f.read().decode("utf-8", errors="ignore").strip().split("\n")
+            if len(lines) < 2:
+                return None
+            last_line = lines[-1]
+            ts_str = last_line.split(",")[0]
+            ts = pd.to_datetime(ts_str, utc=True)
+            return int(ts.timestamp() * 1000)
+    except Exception:
+        return None
 
 
 def _get_cache_path(exchange_id: str, symbol: str, timeframe: str) -> Path:

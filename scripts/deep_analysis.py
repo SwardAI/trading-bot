@@ -51,23 +51,13 @@ def download_all_data():
     write_section("PHASE 1: DATA DOWNLOAD")
 
     # 1-minute data for grid (high-resolution backtest)
-    # Need ~2.1M candles for 4 years. Require at least 1.8M to consider complete.
+    # download_ohlcv now streams to disk and supports resume, so partial data is fine.
     for symbol in ["BTC/USDT", "ETH/USDT"]:
-        cached = load_cached_data("binance", symbol, "1m")
-        if cached is not None and len(cached) > 1_800_000:
-            log(f"  {symbol} 1m: {len(cached)} candles cached, skipping download")
-        else:
-            # Delete incomplete cache if it exists
-            from src.backtest.data_fetcher import _get_cache_path
-            cache_file = _get_cache_path("binance", symbol, "1m")
-            if cache_file.exists():
-                log(f"  {symbol} 1m: removing incomplete cache ({len(cached) if cached is not None else 0} candles)")
-                cache_file.unlink()
-            log(f"  Downloading {symbol} 1m from 2022-01-01 (this takes 30-60 min per symbol)...")
-            t0 = time.time()
-            df = download_ohlcv("binance", symbol, "1m", "2022-01-01")
-            elapsed = time.time() - t0
-            log(f"  {symbol} 1m: {len(df)} candles downloaded in {elapsed:.0f}s")
+        log(f"  Downloading {symbol} 1m from 2022-01-01 (resumes if partial data exists)...")
+        t0 = time.time()
+        df = download_ohlcv("binance", symbol, "1m", "2022-01-01")
+        elapsed = time.time() - t0
+        log(f"  {symbol} 1m: {len(df)} candles in {elapsed:.0f}s")
 
     # 1-hour data for momentum (all 5 symbols)
     for symbol in ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT", "LINK/USDT"]:
