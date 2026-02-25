@@ -91,7 +91,8 @@ def download_funding_rates(symbol: str, since: str = "2022-01-01") -> pd.DataFra
 
     # Check cache
     if cache_file.exists():
-        df = pd.read_csv(cache_file, parse_dates=["timestamp"])
+        df = pd.read_csv(cache_file)
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         if len(df) > 100:
             log(f"  {symbol}: loaded {len(df)} cached funding rates")
             return df
