@@ -67,7 +67,7 @@ def resample(df: pd.DataFrame, freq: str) -> pd.DataFrame:
 
 
 def load_data(symbol: str):
-    """Load hourly data and return hourly, 4h, and daily DataFrames."""
+    """Load hourly data and return 4h and daily DataFrames (memory efficient)."""
     df = load_cached_data("binance", symbol, "1h")
     if df is None:
         log(f"  Downloading {symbol}...")
@@ -76,14 +76,16 @@ def load_data(symbol: str):
             df = load_cached_data("binance", symbol, "1h")
         except Exception as e:
             log(f"  ERROR: {e}")
-            return None, None, None
+            return None, None, 0
     if df is None:
-        return None, None, None
+        return None, None, 0
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    df_1h = df.reset_index(drop=True)
+    n_1h = len(df)
     df_4h = resample(df, "4h")
     df_1d = resample(df, "1D")
-    return df_1h, df_4h, df_1d
+    del df  # Free hourly data immediately
+    gc.collect()
+    return df_4h, df_1d, n_1h
 
 
 def multi_tf_backtest(df_4h: pd.DataFrame, df_1d: pd.DataFrame, config: dict):
@@ -361,12 +363,12 @@ def main():
 
     for symbol in ALL_SYMBOLS:
         log(f"\n--- {symbol} ---")
-        df_1h, df_4h, df_1d = load_data(symbol)
+        df_4h, df_1d, n_1h = load_data(symbol)
         if df_4h is None or df_1d is None or len(df_4h) < 200:
             log(f"  Skipping: insufficient data")
             continue
 
-        log(f"  Data: {len(df_1h)} 1h, {len(df_4h)} 4h, {len(df_1d)} daily candles")
+        log(f"  Data: {n_1h} 1h, {len(df_4h)} 4h, {len(df_1d)} daily candles")
 
         for name, config in CONFIGS.items():
             try:
@@ -382,10 +384,19 @@ def main():
 
                 if name not in all_results:
                     all_results[name] = []
-                all_results[name].append((symbol, result))
+                # Store only summary stats, not full result (saves memory)
+                all_results[name].append((symbol, {
+                    "total_return_pct": result.total_return_pct,
+                    "max_drawdown_pct": result.max_drawdown_pct,
+                    "sharpe_ratio": result.sharpe_ratio,
+                    "profit_factor": result.profit_factor,
+                    "total_trades": result.total_trades,
+                }))
+                del result
             except Exception as e:
                 log(f"  {name}: ERROR - {e}")
 
+        del df_4h, df_1d
         gc.collect()
 
     # Phase 2: Aggregate ranking
@@ -397,10 +408,10 @@ def main():
     log("-" * 100)
 
     for name, pairs in sorted(all_results.items()):
-        rets = [r.total_return_pct for _, r in pairs]
-        dds = [r.max_drawdown_pct for _, r in pairs]
-        sharpes = [r.sharpe_ratio for _, r in pairs]
-        trades = [r.total_trades for _, r in pairs]
+        rets = [r["total_return_pct"] for _, r in pairs]
+        dds = [r["max_drawdown_pct"] for _, r in pairs]
+        sharpes = [r["sharpe_ratio"] for _, r in pairs]
+        trades = [r["total_trades"] for _, r in pairs]
         profitable = sum(1 for r in rets if r > 0)
 
         avg_ret = np.mean(rets)
@@ -443,7 +454,7 @@ def main():
     overall_total = 0
 
     for symbol in test_symbols:
-        df_1h, df_4h, df_1d = load_data(symbol)
+        df_4h, df_1d, n_1h = load_data(symbol)
         if df_4h is None or df_1d is None:
             continue
 
@@ -508,10 +519,10 @@ def main():
     # Phase 4: Portfolio simulation with best strategy
     write_section("PHASE 4: Portfolio Simulation")
     min_len = float("inf")
-    pair_data = {}
+    pair_data = {}  # {symbol: {return, dd, trades, pf, equity_curve}}
 
     for symbol in ALL_SYMBOLS:
-        _, df_4h, df_1d = load_data(symbol)
+        df_4h, df_1d, _ = load_data(symbol)
         if df_4h is None or df_1d is None:
             continue
         if best_name.startswith("Daily_only"):
@@ -519,8 +530,16 @@ def main():
         else:
             result = multi_tf_backtest(df_4h, df_1d, best_config)
         if result.equity_curve:
-            pair_data[symbol] = result
+            pair_data[symbol] = {
+                "total_return_pct": result.total_return_pct,
+                "max_drawdown_pct": result.max_drawdown_pct,
+                "total_trades": result.total_trades,
+                "profit_factor": result.profit_factor,
+                "equity_curve": result.equity_curve,
+            }
             min_len = min(min_len, len(result.equity_curve))
+        del result, df_4h, df_1d
+        gc.collect()
 
     n_pairs = len(pair_data)
     if n_pairs == 0:
@@ -529,8 +548,8 @@ def main():
         per_pair = INITIAL_CAPITAL / n_pairs
         portfolio = []
         for i in range(int(min_len)):
-            total = sum(r.equity_curve[i] / INITIAL_CAPITAL * per_pair
-                        for r in pair_data.values() if i < len(r.equity_curve))
+            total = sum(r["equity_curve"][i] / INITIAL_CAPITAL * per_pair
+                        for r in pair_data.values() if i < len(r["equity_curve"]))
             portfolio.append(total)
 
         initial = portfolio[0]
@@ -552,9 +571,9 @@ def main():
 
         rets = [(portfolio[i] - portfolio[i-1]) / portfolio[i-1]
                 for i in range(1, len(portfolio)) if portfolio[i-1] > 0]
-        sharpe = np.mean(rets) / np.std(rets) * (365.25 ** 0.5) if rets and np.std(rets) > 0 else 0
+        sharpe = np.mean(rets) / np.std(rets) * (bars_per_year ** 0.5) if rets and np.std(rets) > 0 else 0
 
-        total_trades = sum(r.total_trades for r in pair_data.values())
+        total_trades = sum(r["total_trades"] for r in pair_data.values())
 
         log(f"\n  Portfolio ({n_pairs} pairs, {years:.1f} years):")
         log(f"    Total return:      {total_ret:+.1f}%")
@@ -574,9 +593,12 @@ def main():
             log(f"    {annual:.1f}%/year — below target")
 
         log(f"\n  Per-pair breakdown:")
-        for sym, r in sorted(pair_data.items(), key=lambda x: x[1].total_return_pct, reverse=True):
-            log(f"    {sym:12s}: {r.total_return_pct:+7.1f}% | DD: {r.max_drawdown_pct:5.1f}% | "
-                f"Trades: {r.total_trades:3d} | PF: {r.profit_factor:.2f}")
+        for sym, r in sorted(pair_data.items(), key=lambda x: x[1]["total_return_pct"], reverse=True):
+            log(f"    {sym:12s}: {r['total_return_pct']:+7.1f}% | DD: {r['max_drawdown_pct']:5.1f}% | "
+                f"Trades: {r['total_trades']:3d} | PF: {r['profit_factor']:.2f}")
+
+    del pair_data
+    gc.collect()
 
     # Final summary
     write_section("FINAL SUMMARY")
