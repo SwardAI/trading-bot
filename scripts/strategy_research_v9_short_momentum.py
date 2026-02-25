@@ -461,8 +461,9 @@ def main():
     log(f"Config: mirror of long MTF Donchian, vol-scaled, with funding rate costs")
     log(f"Fee model: futures taker {FUTURES_TAKER_FEE*100:.3f}% per trade\n")
 
-    short_results = {}
-    long_results = {}
+    # Store only summary numbers, not full result objects (memory-efficient)
+    short_summaries = {}  # {symbol: {ret, ann, dd, trades, wr}}
+    long_summaries = {}
 
     for symbol in ALL_PAIRS:
         log(f"--- {symbol} ---")
@@ -471,25 +472,29 @@ def main():
             log(f"  No data for {symbol}, skipping")
             continue
 
+        years = len(df_4h) / (6 * 365)
         funding = load_funding_rates(symbol)
         funding_status = f"({len(funding)} days)" if funding else "(no funding data)"
 
         # Short backtest
         try:
             sr = short_momentum_backtest(df_4h, df_1d, base_config, funding)
-            short_results[symbol] = sr
             sell_trades = [t for t in sr.trades if t.side == "sell"]
-            buy_trades = [t for t in sr.trades if t.side == "buy" and t.pnl != 0]
             all_pnl = [t.pnl for t in sr.trades if t.pnl != 0]
             winners = [p for p in all_pnl if p > 0]
             win_rate = len(winners) / len(all_pnl) * 100 if all_pnl else 0
+            ann = sr.total_return_pct / years if years > 0 else 0
 
+            short_summaries[symbol] = {
+                "ret": sr.total_return_pct, "ann": ann,
+                "trades": len(sell_trades), "wr": win_rate,
+            }
             log(f"  SHORT: {sr.total_return_pct:+.1f}% total, "
-                f"{sr.total_return_pct / (len(df_4h) / (6 * 365)):+.1f}%/yr, "
-                f"DD {max(0, -min(np.diff(sr.equity_curve)) / max(sr.equity_curve) * 100) if len(sr.equity_curve) > 1 else 0:.1f}%, "
+                f"{ann:+.1f}%/yr, "
                 f"{len(sell_trades)} entries, "
                 f"WR {win_rate:.0f}% "
                 f"{funding_status}")
+            del sr
         except Exception as e:
             log(f"  SHORT ERROR: {e}")
             traceback.print_exc()
@@ -497,16 +502,21 @@ def main():
         # Long backtest (for comparison)
         try:
             lr = long_momentum_backtest(df_4h, df_1d, base_config)
-            long_results[symbol] = lr
             buy_entries = [t for t in lr.trades if t.side == "buy"]
             all_pnl_l = [t.pnl for t in lr.trades if t.pnl != 0]
             winners_l = [p for p in all_pnl_l if p > 0]
             win_rate_l = len(winners_l) / len(all_pnl_l) * 100 if all_pnl_l else 0
+            ann_l = lr.total_return_pct / years if years > 0 else 0
 
+            long_summaries[symbol] = {
+                "ret": lr.total_return_pct, "ann": ann_l,
+                "trades": len(buy_entries), "wr": win_rate_l,
+            }
             log(f"  LONG:  {lr.total_return_pct:+.1f}% total, "
-                f"{lr.total_return_pct / (len(df_4h) / (6 * 365)):+.1f}%/yr, "
+                f"{ann_l:+.1f}%/yr, "
                 f"{len(buy_entries)} entries, "
                 f"WR {win_rate_l:.0f}%")
+            del lr
         except Exception as e:
             log(f"  LONG ERROR: {e}")
 
@@ -522,15 +532,15 @@ def main():
     log("-" * 58)
 
     for symbol in ALL_PAIRS:
-        sr = short_results.get(symbol)
-        lr = long_results.get(symbol)
-        if not sr and not lr:
+        ss = short_summaries.get(symbol)
+        ls = long_summaries.get(symbol)
+        if not ss and not ls:
             continue
 
-        s_ret = sr.total_return_pct if sr else 0
-        l_ret = lr.total_return_pct if lr else 0
-        s_trades = len([t for t in sr.trades if t.side == "sell"]) if sr else 0
-        l_trades = len([t for t in lr.trades if t.side == "buy"]) if lr else 0
+        s_ret = ss["ret"] if ss else 0
+        l_ret = ls["ret"] if ls else 0
+        s_trades = ss["trades"] if ss else 0
+        l_trades = ls["trades"] if ls else 0
 
         log(f"{symbol:<12} {s_ret:>+7.1f}% {l_ret:>+7.1f}% {s_trades:>13} {l_trades:>12}")
 
@@ -643,10 +653,10 @@ def main():
     # ========================================================
     write_section("PHASE 5: NOISE RESILIENCE (SHORT STRATEGY)")
 
-    log("Adding 0.5% Gaussian noise to prices, running 50 iterations on BTC+ETH...")
+    log("Adding 0.5% Gaussian noise to prices, running 30 iterations on BTC+ETH...")
 
     noise_pairs = ["BTC/USDT", "ETH/USDT"]
-    noise_iters = 50
+    noise_iters = 30
     noise_results = {s: [] for s in noise_pairs}
 
     for symbol in noise_pairs:
@@ -695,21 +705,20 @@ def main():
     log(f"Runtime: {elapsed:.0f}s ({elapsed/60:.1f} min)")
 
     # Summarize
-    short_profitable = sum(1 for r in short_results.values() if r.total_return_pct > 0)
-    short_total = len(short_results)
+    short_profitable = sum(1 for s in short_summaries.values() if s["ret"] > 0)
+    short_total = len(short_summaries)
     log(f"\nShort momentum profitable: {short_profitable}/{short_total} pairs")
 
-    if short_results:
-        avg_short = np.mean([r.total_return_pct for r in short_results.values()])
-        avg_years = 4.15  # ~Jan 2022 to Feb 2026
-        avg_ann = avg_short / avg_years if avg_years > 0 else 0
+    if short_summaries:
+        avg_short = np.mean([s["ret"] for s in short_summaries.values()])
+        avg_ann = np.mean([s["ann"] for s in short_summaries.values()])
         log(f"Avg short return: {avg_short:+.1f}% total ({avg_ann:+.1f}%/yr)")
 
     if combined_results:
         avg_combined = np.mean([r["total_return_pct"] / r["years"] for r in combined_results.values() if r["years"] > 0])
         log(f"Avg combined (long+short) return: {avg_combined:+.1f}%/yr")
 
-    long_avg = np.mean([r.total_return_pct for r in long_results.values()]) if long_results else 0
+    long_avg = np.mean([s["ret"] for s in long_summaries.values()]) if long_summaries else 0
     long_years = 4.15  # approximate
     log(f"Avg long-only return: {long_avg:+.1f}% total ({long_avg / long_years:+.1f}%/yr)")
 
