@@ -21,7 +21,7 @@ def download_ohlcv(
     timeframe: str = "1m",
     since: str = "2025-01-01",
     limit_per_request: int = 1000,
-) -> pd.DataFrame:
+) -> int:
     """Download historical OHLCV data from an exchange.
 
     Streams chunks directly to CSV to keep memory low (works on 1GB VPS).
@@ -36,7 +36,8 @@ def download_ohlcv(
         limit_per_request: Max candles per API call.
 
     Returns:
-        DataFrame with columns: timestamp, open, high, low, close, volume.
+        Total number of candles saved to cache file.
+        Use load_cached_data() or load_cached_data_chunked() to read.
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     cache_file = _get_cache_path(exchange_id, symbol, timeframe)
@@ -110,12 +111,10 @@ def download_ohlcv(
 
     if total_rows == 0:
         logger.warning(f"No data downloaded for {symbol}")
-        return pd.DataFrame(columns=COLUMNS)
+        return 0
 
     logger.info(f"Saved {total_rows} candles to {cache_file}")
-
-    # Read back from disk (memory-efficient: only at point of use)
-    return pd.read_csv(cache_file, parse_dates=["timestamp"])
+    return total_rows
 
 
 def _get_last_timestamp(cache_file: Path) -> int | None:
@@ -157,6 +156,41 @@ def load_cached_data(exchange_id: str, symbol: str, timeframe: str) -> pd.DataFr
         df = pd.read_csv(cache_file, parse_dates=["timestamp"])
         return df
     return None
+
+
+def load_cached_data_chunked(
+    exchange_id: str, symbol: str, timeframe: str,
+    year: int | None = None,
+) -> pd.DataFrame | None:
+    """Load cached data, optionally filtered to a single year.
+
+    Reads in chunks to keep memory low for large 1m datasets.
+    """
+    cache_file = _get_cache_path(exchange_id, symbol, timeframe)
+    if not cache_file.exists():
+        return None
+
+    if year is None:
+        return pd.read_csv(cache_file, parse_dates=["timestamp"])
+
+    # Read in chunks and filter to the requested year
+    chunks = []
+    for chunk in pd.read_csv(cache_file, parse_dates=["timestamp"], chunksize=100_000):
+        filtered = chunk[chunk["timestamp"].dt.year == year]
+        if len(filtered) > 0:
+            chunks.append(filtered)
+
+    if not chunks:
+        return None
+    return pd.concat(chunks, ignore_index=True)
+
+
+def count_cached_rows(exchange_id: str, symbol: str, timeframe: str) -> int:
+    """Count rows in a cached data file without loading it into memory."""
+    cache_file = _get_cache_path(exchange_id, symbol, timeframe)
+    if not cache_file.exists():
+        return 0
+    return sum(1 for _ in open(cache_file)) - 1  # minus header
 
 
 def list_cached_data() -> list[dict]:

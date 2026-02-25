@@ -38,7 +38,8 @@ def main():
     df = load_cached_data(args.exchange, args.symbol, args.timeframe)
     if df is None:
         print(f"No cached data found. Downloading {args.symbol} {args.timeframe}...")
-        df = download_ohlcv(args.exchange, args.symbol, args.timeframe, args.since)
+        download_ohlcv(args.exchange, args.symbol, args.timeframe, args.since)
+        df = load_cached_data(args.exchange, args.symbol, args.timeframe)
 
     if len(df) < 50:
         print(f"Insufficient data: {len(df)} candles (need at least 50)")

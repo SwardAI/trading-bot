@@ -36,7 +36,8 @@ def load_data(symbol: str, timeframe: str = "1h") -> pd.DataFrame:
     df = load_cached_data("binance", symbol, timeframe)
     if df is None:
         print(f"  Downloading {symbol} {timeframe}...")
-        df = download_ohlcv("binance", symbol, timeframe, "2022-01-01")
+        download_ohlcv("binance", symbol, timeframe, "2022-01-01")
+        df = load_cached_data("binance", symbol, timeframe)
     return df
 
 

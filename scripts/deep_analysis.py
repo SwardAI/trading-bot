@@ -21,7 +21,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.backtest.data_fetcher import download_ohlcv, load_cached_data
+from src.backtest.data_fetcher import download_ohlcv, load_cached_data, load_cached_data_chunked, count_cached_rows
 from src.backtest.engine import BacktestEngine
 
 REPORT_FILE = "data/deep_analysis_report.txt"
@@ -51,65 +51,88 @@ def download_all_data():
     write_section("PHASE 1: DATA DOWNLOAD")
 
     # 1-minute data for grid (high-resolution backtest)
-    # download_ohlcv now streams to disk and supports resume, so partial data is fine.
+    # download_ohlcv streams to disk and supports resume. Returns row count, not DataFrame.
     for symbol in ["BTC/USDT", "ETH/USDT"]:
-        log(f"  Downloading {symbol} 1m from 2022-01-01 (resumes if partial data exists)...")
-        t0 = time.time()
-        df = download_ohlcv("binance", symbol, "1m", "2022-01-01")
-        elapsed = time.time() - t0
-        log(f"  {symbol} 1m: {len(df)} candles in {elapsed:.0f}s")
+        existing = count_cached_rows("binance", symbol, "1m")
+        if existing > 1_800_000:
+            log(f"  {symbol} 1m: {existing} candles cached, skipping download")
+        else:
+            log(f"  Downloading {symbol} 1m from 2022-01-01 (resumes from {existing} candles)...")
+            t0 = time.time()
+            total = download_ohlcv("binance", symbol, "1m", "2022-01-01")
+            elapsed = time.time() - t0
+            log(f"  {symbol} 1m: {total} candles in {elapsed:.0f}s")
 
     # 1-hour data for momentum (all 5 symbols)
     for symbol in ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT", "LINK/USDT"]:
-        cached = load_cached_data("binance", symbol, "1h")
-        if cached is not None and len(cached) > 10_000:
-            log(f"  {symbol} 1h: {len(cached)} candles cached, skipping download")
+        existing = count_cached_rows("binance", symbol, "1h")
+        if existing > 10_000:
+            log(f"  {symbol} 1h: {existing} candles cached, skipping download")
         else:
             log(f"  Downloading {symbol} 1h from 2022-01-01...")
             t0 = time.time()
-            df = download_ohlcv("binance", symbol, "1h", "2022-01-01")
+            total = download_ohlcv("binance", symbol, "1h", "2022-01-01")
             elapsed = time.time() - t0
-            log(f"  {symbol} 1h: {len(df)} candles downloaded in {elapsed:.0f}s")
+            log(f"  {symbol} 1h: {total} candles downloaded in {elapsed:.0f}s")
 
 
 def grid_1m_backtest():
-    """Run grid backtest on 1-minute data for accurate fill simulation."""
+    """Run grid backtest on 1-minute data, processing year-by-year to stay within memory."""
     write_section("PHASE 2: HIGH-RESOLUTION GRID BACKTEST (1-minute data)")
 
-    # Test the actual live config params
     configs = [
         {"symbol": "BTC/USDT", "spacing": 0.5, "order_size": 75, "num_grids": 20, "label": "LIVE config"},
         {"symbol": "ETH/USDT", "spacing": 0.8, "order_size": 50, "num_grids": 15, "label": "LIVE config"},
-        # Also test wider spacing (from optimizer findings)
         {"symbol": "BTC/USDT", "spacing": 1.0, "order_size": 50, "num_grids": 20, "label": "Wide spacing"},
         {"symbol": "ETH/USDT", "spacing": 1.5, "order_size": 50, "num_grids": 15, "label": "Wide spacing"},
     ]
 
     for cfg in configs:
-        df = load_cached_data("binance", cfg["symbol"], "1m")
-        if df is None or len(df) < 100:
+        total_candles = count_cached_rows("binance", cfg["symbol"], "1m")
+        if total_candles < 100:
             log(f"  SKIP {cfg['symbol']} 1m — no data")
             continue
 
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         log(f"\n  {cfg['symbol']} ({cfg['label']}): spacing={cfg['spacing']}%, order=${cfg['order_size']}, grids={cfg['num_grids']}")
-        log(f"  Data: {len(df)} candles from {df.iloc[0]['timestamp'].date()} to {df.iloc[-1]['timestamp'].date()}")
+        log(f"  Data: {total_candles} candles total, processing year by year")
 
+        # Process each year separately to stay within memory limits
         t0 = time.time()
-        engine = BacktestEngine(initial_capital=INITIAL_CAPITAL)
-        result = engine.run_grid_backtest(
-            df, grid_spacing_pct=cfg["spacing"],
-            order_size_usd=cfg["order_size"], num_grids=cfg["num_grids"],
-        )
+        capital = INITIAL_CAPITAL
+        total_trades = 0
+        all_yearly = {}
+
+        for year in [2022, 2023, 2024, 2025, 2026]:
+            df = load_cached_data_chunked("binance", cfg["symbol"], "1m", year=year)
+            if df is None or len(df) < 100:
+                continue
+
+            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+            engine = BacktestEngine(initial_capital=capital)
+            result = engine.run_grid_backtest(
+                df, grid_spacing_pct=cfg["spacing"],
+                order_size_usd=cfg["order_size"], num_grids=cfg["num_grids"],
+            )
+
+            trades_this_year = result.total_trades
+            total_trades += trades_this_year
+            all_yearly[year] = {
+                "return": result.total_return_pct,
+                "pf": result.profit_factor,
+                "trades": trades_this_year,
+                "capital_start": capital,
+                "capital_end": result.final_capital,
+            }
+
+            log(f"    {year}: {len(df)} candles | ${capital:,.0f} -> ${result.final_capital:,.0f} ({result.total_return_pct:+.1f}%) | {trades_this_year} trades | PF={result.profit_factor:.2f}")
+            capital = result.final_capital
+
+            # Free memory
+            del df, engine, result
+
         elapsed = time.time() - t0
-
-        log(f"  Return: {result.total_return_pct:+.2f}% | Net P&L: ${result.net_profit:,.2f}")
-        log(f"  Trades: {result.total_trades} | Win rate: {result.win_rate:.1f}% | PF: {result.profit_factor:.2f}")
-        log(f"  Max DD: {result.max_drawdown_pct:.2f}% | Sharpe: {result.sharpe_ratio:.2f}")
-        log(f"  Computed in {elapsed:.0f}s")
-
-        # Yearly breakdown
-        _yearly_breakdown(result, cfg["symbol"], "grid")
+        total_return = (capital - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
+        log(f"  TOTAL: ${INITIAL_CAPITAL:,.0f} -> ${capital:,.0f} ({total_return:+.1f}%) | {total_trades} trades | {elapsed:.0f}s")
 
 
 def momentum_all_symbols():

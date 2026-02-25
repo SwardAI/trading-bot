@@ -34,11 +34,8 @@ def main():
         return
 
     print(f"Downloading {args.symbol} {args.timeframe} from {args.since} ({args.exchange})...")
-    df = download_ohlcv(args.exchange, args.symbol, args.timeframe, args.since)
-    print(f"\nDownloaded {len(df)} candles")
-    if len(df) > 0:
-        print(f"  First: {df.iloc[0]['timestamp']}")
-        print(f"  Last:  {df.iloc[-1]['timestamp']}")
+    total = download_ohlcv(args.exchange, args.symbol, args.timeframe, args.since)
+    print(f"\nDownloaded {total} candles")
 
 
 if __name__ == "__main__":
