@@ -77,7 +77,7 @@ def load_data(symbol: str):
     """Load 1h, 4h, and daily data."""
     df = load_cached_data("binance", symbol, "1h")
     if df is None:
-        return None, None, None
+        return None, None
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df_4h = resample(df, "4h")
     df_1d = resample(df, "1D")
@@ -558,27 +558,35 @@ def main():
     # Test on top pairs
     test_pairs = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT"]
 
-    param_results = {}
-    for name, cfg in param_configs.items():
-        returns = []
-        for symbol in test_pairs:
-            df_4h, df_1d = load_data(symbol)
-            if df_4h is None:
-                continue
-            funding = load_funding_rates(symbol)
-            sr = short_momentum_backtest(df_4h, df_1d, cfg, funding)
-            years = len(df_4h) / (6 * 365)
-            ann = sr.total_return_pct / years if years > 0 else 0
-            returns.append(ann)
-            del df_4h, df_1d
-            gc.collect()
+    # Load each pair once, then run all configs (memory-efficient)
+    param_results = {name: [] for name in param_configs}
+    for symbol in test_pairs:
+        log(f"  Loading {symbol}...")
+        df_4h, df_1d = load_data(symbol)
+        if df_4h is None:
+            continue
+        funding = load_funding_rates(symbol)
+        years = len(df_4h) / (6 * 365)
 
-        avg = np.mean(returns) if returns else 0
-        param_results[name] = avg
+        for name, cfg in param_configs.items():
+            try:
+                sr = short_momentum_backtest(df_4h, df_1d, cfg, funding)
+                ann = sr.total_return_pct / years if years > 0 else 0
+                param_results[name].append(ann)
+            except Exception as e:
+                log(f"    {name}: ERROR - {e}")
+
+        del df_4h, df_1d
+        gc.collect()
+
+    # Compute averages
+    param_avgs = {}
+    for name, returns in param_results.items():
+        param_avgs[name] = np.mean(returns) if returns else 0
 
     log(f"\n{'Config':<20} {'Avg Ann%':>10} ({'|'.join(test_pairs)})")
     log("-" * 40)
-    for name, avg in sorted(param_results.items(), key=lambda x: x[1], reverse=True):
+    for name, avg in sorted(param_avgs.items(), key=lambda x: x[1], reverse=True):
         log(f"{name:<20} {avg:>+9.1f}%")
 
     # ========================================================
@@ -693,7 +701,7 @@ def main():
 
     if short_results:
         avg_short = np.mean([r.total_return_pct for r in short_results.values()])
-        avg_years = np.mean([len(load_cached_data("binance", s, "1h")) / (365 * 24) for s in short_results.keys()])
+        avg_years = 4.15  # ~Jan 2022 to Feb 2026
         avg_ann = avg_short / avg_years if avg_years > 0 else 0
         log(f"Avg short return: {avg_short:+.1f}% total ({avg_ann:+.1f}%/yr)")
 
