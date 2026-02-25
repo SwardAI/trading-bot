@@ -50,6 +50,8 @@ class CircuitBreaker:
             self._active = True
             self._level = event["trigger_type"]
             self._activated_at = datetime.fromisoformat(event["timestamp"])
+            if self._level == "daily":
+                self._resumes_at = self._activated_at + timedelta(hours=24)
             logger.warning(f"Active circuit breaker loaded from DB: {self._level} (triggered at {self._activated_at})")
 
     def get_daily_pnl(self) -> float:

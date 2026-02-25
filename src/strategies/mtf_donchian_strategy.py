@@ -206,19 +206,34 @@ class MtfDonchianStrategy(BaseStrategy):
         log_summary = (self._scan_count % 5 == 0)
 
         with self._entry_lock:
+            regimes = {}
             for symbol in self.pairs:
                 # Skip if already have position in this pair
                 if any(p["pair"] == symbol and p["status"] == "open" for p in self.positions):
+                    regimes[symbol] = "IN_POSITION"
                     continue
 
                 # Check cooldown
                 if self._is_in_cooldown(symbol):
+                    regimes[symbol] = "COOLDOWN"
                     continue
 
                 try:
+                    regime = self._fetch_daily_regime(symbol)
+                    regimes[symbol] = regime
                     self._check_and_enter(symbol, log_summary)
                 except Exception as e:
+                    regimes[symbol] = "ERROR"
                     self.logger.error(f"Error scanning {symbol}: {e}", exc_info=True)
+
+            # Log summary every 5 ticks
+            if log_summary:
+                open_pos = [p["pair"] for p in self.positions if p["status"] == "open"]
+                regime_str = ", ".join(f"{s.split('/')[0]}={r[:4]}" for s, r in regimes.items())
+                self.logger.info(
+                    f"MTF scan #{self._scan_count}: [{regime_str}] | "
+                    f"open={len(open_pos)} {open_pos if open_pos else ''}"
+                )
 
     def _check_and_enter(self, symbol: str, log: bool):
         """Check daily regime + 4h breakout for a single pair."""
