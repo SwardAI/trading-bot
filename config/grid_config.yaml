@@ -1,5 +1,6 @@
 grid_strategy:
-  enabled: true
+  enabled: false  # Disabled: 4yr backtest shows net negative return over full market cycles
+  # Grid profits in sideways/bull but losses in bear erase gains. Momentum-only is 4x better risk-adjusted.
   pairs:
     - symbol: "BTC/USDT"
       grid_type: "geometric"

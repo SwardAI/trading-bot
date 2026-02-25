@@ -42,7 +42,9 @@ alerts:
     report_interval_seconds: 36000 # (3600=1hr, 0=daily only)
 
 regime_detection:
-  enabled: true
+  enabled: false  # 4yr backtest: momentum +18.3% without filter vs +13.5% with filter
+  # Filter blocks bear-to-bull transition entries where momentum profits most.
+  # Keep code in place — can re-enable if we add grid back or market conditions change.
   reference_symbol: "BTC/USDT"
   timeframe: "1w"
   ema_period: 20
