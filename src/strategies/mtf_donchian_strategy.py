@@ -435,9 +435,20 @@ class MtfDonchianStrategy(BaseStrategy):
         )
 
     def _place_futures_order(self, symbol: str, side: str, amount: float, price: float) -> dict | None:
-        """Place a futures order using the futures exchange."""
+        """Place a futures order using the futures exchange.
+
+        Converts spot symbol (e.g. BTC/USDT) to futures format (BTC/USDT:USDT).
+        Sets leverage to 1x — we short for directional exposure, not leverage.
+        """
+        futures_symbol = f"{symbol}:USDT"
         try:
-            order = self.futures_exchange.create_order(symbol, "market", side, amount)
+            # Set 1x leverage (no leverage — just directional short)
+            try:
+                self.futures_exchange.set_leverage(1, futures_symbol)
+            except Exception as e:
+                self.logger.warning(f"Could not set leverage for {futures_symbol}: {e}")
+
+            order = self.futures_exchange.create_order(futures_symbol, "market", side, amount)
             filled_price = order.get("average", order.get("price", price))
             filled_amount = order.get("filled", amount)
             fee_cost = 0.0

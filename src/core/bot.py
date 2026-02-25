@@ -142,6 +142,20 @@ class Bot:
         # MTF Donchian strategy — single instance covering all pairs
         mtf_config = self.config.get("mtf_donchian_strategy", {})
         if mtf_config.get("enabled") and self.primary_exchange and self.risk_manager and self.order_manager and self.market_data:
+            # Create futures exchange if shorts are enabled
+            futures_exchange = None
+            if mtf_config.get("enable_shorts"):
+                exchange_key = "binance"  # Primary exchange
+                exchange_conf = self.config.get("exchanges", {}).get(exchange_key, {})
+                if exchange_conf:
+                    try:
+                        futures_exchange = ExchangeManager.create_futures_instance(exchange_key, exchange_conf)
+                        futures_exchange.load_markets()
+                        logger.info(f"Futures exchange loaded for MTF Donchian: {len(futures_exchange.exchange.markets)} markets")
+                    except Exception as e:
+                        logger.error(f"Failed to create futures exchange for MTF Donchian: {e}", exc_info=True)
+                        logger.warning("Shorts will be disabled — falling back to long-only")
+
             strategy = MtfDonchianStrategy(
                 config=mtf_config,
                 exchange=self.primary_exchange,
@@ -150,9 +164,11 @@ class Bot:
                 order_manager=self.order_manager,
                 market_data=self.market_data,
                 regime_detector=self.regime_detector,
+                futures_exchange=futures_exchange,
             )
             self.strategies.append(strategy)
-            logger.info(f"MTF Donchian strategy registered for {len(mtf_config.get('pairs', []))} pairs")
+            shorts_str = "shorts=ON" if futures_exchange else "shorts=OFF (no futures)"
+            logger.info(f"MTF Donchian strategy registered for {len(mtf_config.get('pairs', []))} pairs ({shorts_str})")
 
         # Funding rate arbitrage strategy — needs a separate futures exchange instance
         funding_config = self.config.get("funding_strategy", {})

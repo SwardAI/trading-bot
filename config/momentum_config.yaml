@@ -48,42 +48,50 @@ momentum_strategy:
   cooldown_after_loss_minutes: 60
 
 # --- Vol-scaled MTF Donchian Ensemble (PRIMARY STRATEGY) ---
-# Proven via v1-v10 research: 20.2%/yr spot-only, 51.5%/yr combined (long+short)
+# Optimized config (v10b): ATR 2.5, entry 10, risk 6% — validated not overfit
+# Combined long+short: 51.5%/yr, DD 15.0%, R/DD 3.43
 # Robustness: 6/7 PASS (90% weighted), 330/330 noise resilient (100%)
+# 10 pairs with R/DD-weighted allocation (ETH 29%, SOL 17%, AVAX 14%, ...)
 mtf_donchian_strategy:
   enabled: true
 
-  # R/DD-weighted allocation across 7 pairs (from v3 robustness research)
+  # R/DD-weighted allocation (optimized v10b combined long+short)
   pairs:
-    - symbol: "SOL/USDT"
-      allocation_pct: 40
-    - symbol: "DOGE/USDT"
-      allocation_pct: 17
     - symbol: "ETH/USDT"
-      allocation_pct: 12
+      allocation_pct: 29
+    - symbol: "SOL/USDT"
+      allocation_pct: 17
     - symbol: "AVAX/USDT"
-      allocation_pct: 12
-    - symbol: "LINK/USDT"
+      allocation_pct: 14
+    - symbol: "NEAR/USDT"
       allocation_pct: 8
-    - symbol: "ADA/USDT"
-      allocation_pct: 6
+    - symbol: "DOGE/USDT"
+      allocation_pct: 7
+    - symbol: "LINK/USDT"
+      allocation_pct: 7
     - symbol: "BTC/USDT"
       allocation_pct: 6
+    - symbol: "ADA/USDT"
+      allocation_pct: 6
+    - symbol: "UNI/USDT"
+      allocation_pct: 3
+    - symbol: "ATOM/USDT"
+      allocation_pct: 3
 
   # Daily Donchian filter: 2/3 of [20, 50, 100] must agree on trend direction
   daily_periods: [20, 50, 100]
   daily_min_votes: 2
 
-  # 4h entry/exit: breakout above 14-period high, exit below 7-period low
-  entry_period_4h: 14
+  # 4h entry/exit: optimized config (v10b validated: 330/330 noise, 69% walk-forward)
+  entry_period_4h: 10
   exit_period_4h: 7
   atr_period: 14
 
-  # Chandelier stop: highest_since_entry - 3.0 * ATR
-  atr_stop_mult: 3.0
+  # Chandelier stop: highest_since_entry - 2.5 * ATR (optimized from 3.0)
+  atr_stop_mult: 2.5
 
-  # Risk: 5% base risk per trade, vol-scaled between 0.5x and 2.0x
-  risk_per_trade_pct: 5.0
+  # Risk: 6% base risk per trade, vol-scaled between 0.5x and 2.0x (optimized from 5%)
+  risk_per_trade_pct: 6.0
   fee_rate: 0.001        # 0.1% taker for spot
   futures_fee_rate: 0.0004  # 0.04% taker for futures
 
@@ -93,8 +101,9 @@ mtf_donchian_strategy:
   vol_scale_min: 0.5
   vol_scale_max: 2.0
 
-  # Short-side (requires futures exchange — disabled until futures capability built)
-  enable_shorts: false
+  # Short-side: enabled (uses futures exchange for short positions)
+  # V10 validated: 6/7 PASS, combined long+short = 51.5%/yr
+  enable_shorts: true
 
   # Cooldown: 2 bars * 4h = 8 hours after a loss before re-entering
   cooldown_bars: 2
