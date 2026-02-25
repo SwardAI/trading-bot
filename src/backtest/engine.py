@@ -336,6 +336,303 @@ class BacktestEngine:
             "momentum", df, trades, equity_curve, final_capital,
         )
 
+    def run_daily_trend_backtest(
+        self,
+        df: pd.DataFrame,
+        config: dict | None = None,
+        long_only: bool = True,
+    ) -> BacktestResult:
+        """Backtest a daily-timeframe trend following strategy.
+
+        Designed for low trade frequency and high conviction, based on
+        academic research (Zarattini 2025, Le & Ruthbah 2023). Supports
+        multiple signal modes:
+
+        - "ensemble_donchian": 3 Donchian channels vote (2/3 majority)
+        - "squeeze": Bollinger-Keltner squeeze breakout
+        - "dual_ma": Golden cross regime + pullback entry
+
+        Args:
+            df: OHLCV DataFrame (ideally daily candles, or hourly resampled to daily).
+            config: Strategy config dict. Keys:
+                - signal_mode: "ensemble_donchian", "squeeze", or "dual_ma"
+                - donchian_periods: list of 3 lookback periods (default [20, 50, 100])
+                - donchian_exit_divisor: exit channel = entry period / divisor (default 2)
+                - donchian_min_votes: min channels agreeing (default 2)
+                - squeeze_bb_period: Bollinger Band period (default 20)
+                - squeeze_bb_std: BB standard deviations (default 2.0)
+                - squeeze_kc_mult: Keltner channel ATR mult (default 1.5)
+                - squeeze_min_bars: Min bars in squeeze before breakout (default 5)
+                - ma_fast: Fast MA period for dual_ma (default 50)
+                - ma_slow: Slow MA period for dual_ma (default 200)
+                - atr_period: ATR period (default 14)
+                - atr_stop_mult: Trailing stop ATR multiplier (default 3.0)
+                - volume_period: Volume MA period (default 20)
+                - volume_mult: Volume confirmation multiplier (default 1.0)
+                - risk_per_trade_pct: % of capital risked per trade (default 2.0)
+                - cooldown_bars: Bars to wait after exit (default 3)
+                - max_hold_bars: Max bars to hold position (default 0 = unlimited)
+            long_only: If True, skip short signals.
+
+        Returns:
+            BacktestResult with full statistics.
+        """
+        import numpy as np
+        import ta
+
+        if config is None:
+            config = {}
+
+        signal_mode = config.get("signal_mode", "ensemble_donchian")
+        atr_period = config.get("atr_period", 14)
+        atr_stop_mult = config.get("atr_stop_mult", 3.0)
+        volume_period = config.get("volume_period", 20)
+        volume_mult = config.get("volume_mult", 1.0)
+        risk_pct = config.get("risk_per_trade_pct", 2.0)
+        cooldown_bars = config.get("cooldown_bars", 3)
+        max_hold_bars = config.get("max_hold_bars", 0)
+
+        df = df.copy()
+
+        # Core indicators for all modes
+        df["atr"] = ta.volatility.average_true_range(
+            df["high"], df["low"], df["close"], window=atr_period,
+        )
+        df["volume_ma"] = df["volume"].rolling(window=volume_period).mean()
+
+        # Mode-specific indicators
+        if signal_mode == "ensemble_donchian":
+            periods = config.get("donchian_periods", [20, 50, 100])
+            exit_divisor = config.get("donchian_exit_divisor", 2)
+            min_votes = config.get("donchian_min_votes", 2)
+
+            for p in periods:
+                df[f"dc_high_{p}"] = df["high"].rolling(window=p).max().shift(1)
+                df[f"dc_low_{p}"] = df["low"].rolling(window=max(p // exit_divisor, 5)).min().shift(1)
+
+            lookback = max(periods) + 1
+
+        elif signal_mode == "squeeze":
+            bb_period = config.get("squeeze_bb_period", 20)
+            bb_std = config.get("squeeze_bb_std", 2.0)
+            kc_mult = config.get("squeeze_kc_mult", 1.5)
+            min_squeeze_bars = config.get("squeeze_min_bars", 5)
+
+            # Bollinger Bands
+            df["bb_mid"] = df["close"].rolling(window=bb_period).mean()
+            df["bb_std"] = df["close"].rolling(window=bb_period).std()
+            df["bb_upper"] = df["bb_mid"] + bb_std * df["bb_std"]
+            df["bb_lower"] = df["bb_mid"] - bb_std * df["bb_std"]
+
+            # Keltner Channels
+            kc_atr = ta.volatility.average_true_range(
+                df["high"], df["low"], df["close"], window=bb_period,
+            )
+            df["kc_upper"] = df["bb_mid"] + kc_mult * kc_atr
+            df["kc_lower"] = df["bb_mid"] - kc_mult * kc_atr
+
+            # Squeeze detection: BB inside KC
+            df["in_squeeze"] = (df["bb_upper"] < df["kc_upper"]) & (df["bb_lower"] > df["kc_lower"])
+
+            # Count consecutive squeeze bars
+            squeeze_count = []
+            count = 0
+            for in_sq in df["in_squeeze"]:
+                if in_sq:
+                    count += 1
+                else:
+                    count = 0
+                squeeze_count.append(count)
+            df["squeeze_bars"] = squeeze_count
+
+            lookback = bb_period + 5
+
+        elif signal_mode == "dual_ma":
+            ma_fast = config.get("ma_fast", 50)
+            ma_slow = config.get("ma_slow", 200)
+
+            df["sma_fast"] = df["close"].rolling(window=ma_fast).mean()
+            df["sma_slow"] = df["close"].rolling(window=ma_slow).mean()
+            df["rsi"] = ta.momentum.rsi(df["close"], window=14)
+
+            lookback = ma_slow + 1
+        else:
+            lookback = 100
+
+        capital = self.initial_capital
+        equity_curve = [capital]
+        trades = []
+        position = None
+        bars_since_exit = cooldown_bars
+        bars_in_position = 0
+
+        for i in range(lookback, len(df)):
+            row = df.iloc[i]
+            close = row["close"]
+            high = row["high"]
+            low = row["low"]
+            atr = row["atr"]
+
+            if pd.isna(atr):
+                equity_curve.append(capital)
+                continue
+
+            # Manage existing position
+            if position:
+                bars_in_position += 1
+
+                if position["side"] == "long":
+                    if high > position["highest_since_entry"]:
+                        position["highest_since_entry"] = high
+
+                    # Chandelier trailing stop
+                    chandelier_stop = position["highest_since_entry"] - atr_stop_mult * atr
+                    effective_stop = max(chandelier_stop, position["stop_loss"])
+
+                    # Exit conditions
+                    exit_signal = False
+
+                    # Stop hit
+                    if close <= effective_stop:
+                        exit_signal = True
+
+                    # Ensemble exit: majority of channels say exit
+                    if signal_mode == "ensemble_donchian":
+                        exit_votes = 0
+                        for p in periods:
+                            dc_low = row.get(f"dc_low_{p}")
+                            if not pd.isna(dc_low) and close < dc_low:
+                                exit_votes += 1
+                        if exit_votes >= min_votes:
+                            exit_signal = True
+
+                    # Squeeze exit: price drops below BB mid
+                    elif signal_mode == "squeeze":
+                        if not pd.isna(row.get("bb_mid")) and close < row["bb_mid"]:
+                            exit_signal = True
+
+                    # Dual MA exit: death cross
+                    elif signal_mode == "dual_ma":
+                        if (not pd.isna(row.get("sma_fast")) and
+                                not pd.isna(row.get("sma_slow")) and
+                                row["sma_fast"] < row["sma_slow"]):
+                            exit_signal = True
+
+                    # Time stop
+                    if max_hold_bars > 0 and bars_in_position >= max_hold_bars:
+                        exit_signal = True
+
+                    if exit_signal:
+                        amount = position["amount"]
+                        fee = amount * close * self.taker_fee
+                        pnl = (close - position["entry_price"]) * amount - fee
+                        capital += pnl
+                        trades.append(BacktestTrade(
+                            timestamp=row["timestamp"], side="sell",
+                            price=close, amount=amount,
+                            cost=amount * close, fee=fee, pnl=pnl,
+                            strategy=f"daily_{signal_mode}",
+                        ))
+                        position = None
+                        bars_since_exit = 0
+                        bars_in_position = 0
+
+                equity = capital + (self._position_value(position, close) if position else 0)
+                equity_curve.append(equity)
+                continue
+
+            # Cooldown
+            bars_since_exit += 1
+            if bars_since_exit < cooldown_bars:
+                equity_curve.append(capital)
+                continue
+
+            # Volume check
+            vol_ok = (
+                row["volume"] > row["volume_ma"] * volume_mult
+                if not pd.isna(row.get("volume_ma")) and row["volume_ma"] > 0
+                else True
+            )
+
+            # Entry signal based on mode
+            entry_long = False
+
+            if signal_mode == "ensemble_donchian":
+                votes = 0
+                for p in periods:
+                    dc_high = row.get(f"dc_high_{p}")
+                    if not pd.isna(dc_high) and close > dc_high:
+                        votes += 1
+                entry_long = votes >= min_votes and vol_ok
+
+            elif signal_mode == "squeeze":
+                # Previous bar was in squeeze (with enough duration), current bar breaks out
+                prev = df.iloc[i - 1]
+                was_in_squeeze = (not pd.isna(prev.get("squeeze_bars"))
+                                  and prev["squeeze_bars"] >= min_squeeze_bars)
+                breaks_upper = close > row.get("bb_upper", float("inf"))
+                entry_long = was_in_squeeze and breaks_upper and vol_ok
+
+            elif signal_mode == "dual_ma":
+                # Golden cross regime + pullback to fast MA
+                if (not pd.isna(row.get("sma_fast")) and
+                        not pd.isna(row.get("sma_slow")) and
+                        not pd.isna(row.get("rsi"))):
+                    golden_cross = row["sma_fast"] > row["sma_slow"]
+                    # Price near fast MA (within 2%)
+                    near_ma = abs(close - row["sma_fast"]) / row["sma_fast"] < 0.02
+                    # RSI in healthy pullback zone
+                    rsi_ok = 35 <= row["rsi"] <= 55
+                    entry_long = golden_cross and near_ma and rsi_ok and vol_ok
+
+            if entry_long:
+                stop_loss = close - atr_stop_mult * atr
+                risk_per_unit = close - stop_loss
+                if risk_per_unit > 0 and risk_per_unit < close * 0.15:  # sanity: max 15% stop
+                    risk_amount = capital * (risk_pct / 100)
+                    amount = risk_amount / risk_per_unit
+                    cost = amount * close
+                    fee = cost * self.taker_fee
+                    if cost + fee <= capital * 0.95:  # Keep 5% cash buffer
+                        capital -= fee
+                        position = {
+                            "side": "long",
+                            "entry_price": close,
+                            "amount": amount,
+                            "stop_loss": stop_loss,
+                            "highest_since_entry": high,
+                            "atr": atr,
+                        }
+                        trades.append(BacktestTrade(
+                            timestamp=row["timestamp"], side="buy",
+                            price=close, amount=amount,
+                            cost=cost, fee=fee,
+                            strategy=f"daily_{signal_mode}",
+                        ))
+                        bars_in_position = 0
+
+            equity = capital + (self._position_value(position, close) if position else 0)
+            equity_curve.append(equity)
+
+        # Close any remaining position
+        if position:
+            final_close = df.iloc[-1]["close"]
+            amount = position["amount"]
+            fee = amount * final_close * self.taker_fee
+            pnl = (final_close - position["entry_price"]) * amount - fee
+            capital += pnl
+            trades.append(BacktestTrade(
+                timestamp=df.iloc[-1]["timestamp"], side="sell",
+                price=final_close, amount=amount,
+                cost=amount * final_close, fee=fee, pnl=pnl,
+                strategy=f"daily_{signal_mode}",
+            ))
+
+        final_capital = capital
+        return self._build_result(
+            f"daily_{signal_mode}", df, trades, equity_curve, final_capital,
+        )
+
     def run_breakout_backtest(
         self,
         df: pd.DataFrame,
