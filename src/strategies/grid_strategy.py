@@ -37,6 +37,7 @@ class GridStrategy(BaseStrategy):
         risk_manager: RiskManager,
         order_manager: OrderManager,
         market_data: MarketDataManager,
+        regime_detector=None,
     ):
         super().__init__("grid", pair_config, exchange, db, risk_manager)
         self.symbol = pair_config["symbol"]
@@ -44,6 +45,10 @@ class GridStrategy(BaseStrategy):
         self.global_config = global_config
         self.order_manager = order_manager
         self.market_data = market_data
+        self.regime_detector = regime_detector
+
+        # Track last logged regime to avoid log spam
+        self._last_logged_regime: str | None = None
 
         # Grid parameters
         self.grid_type = pair_config.get("grid_type", "geometric")
@@ -174,29 +179,64 @@ class GridStrategy(BaseStrategy):
         self._save_state()
         self.logger.info(f"Grid stopped for {self.symbol}")
 
+    def _get_regime_adjustments(self) -> tuple[float, float]:
+        """Get regime-adjusted order_size_usd and stop_loss_pct.
+
+        In bear markets: halve order size, tighten stop loss.
+        In bull/sideways: use original config values.
+
+        Returns:
+            (effective_order_size_usd, effective_stop_loss_pct)
+        """
+        order_size = self.order_size_usd
+        stop_loss = self.stop_loss_pct
+
+        if self.regime_detector:
+            regime_info = self.regime_detector.get_regime()
+            if regime_info["regime"] == "bear":
+                order_size *= self.regime_detector.grid_bear_size_mult
+                stop_loss = self.regime_detector.grid_bear_stop_loss_pct
+                if self._last_logged_regime != "bear":
+                    self._last_logged_regime = "bear"
+                    self.logger.info(
+                        f"Grid {self.symbol}: BEAR regime → "
+                        f"order_size=${order_size:.0f}, stop_loss={stop_loss}%"
+                    )
+            elif self._last_logged_regime == "bear":
+                self._last_logged_regime = regime_info["regime"]
+                self.logger.info(
+                    f"Grid {self.symbol}: {regime_info['regime'].upper()} regime → "
+                    f"normal sizing restored (${self.order_size_usd:.0f})"
+                )
+
+        return order_size, stop_loss
+
     def on_tick(self):
         """Called every grid_check_interval — check fills, place pending orders, rebalance, stop loss."""
         if not self._running:
             return
 
         with self._state_lock:
+            # Get regime-adjusted parameters for this tick
+            effective_order_size, effective_stop_loss = self._get_regime_adjustments()
+
             self._check_fills()
 
             # Place any pending orders that can actually be placed
             pending_buys = sum(1 for l in self.grid_levels if l["status"] == "pending" and l["side"] == "buy")
             pending_sells = sum(1 for l in self.grid_levels if l["status"] == "pending" and l["side"] == "sell")
             has_sellable_inventory = self.inventory_amount > sum(
-                self.order_size_usd / l["price"]
+                effective_order_size / l["price"]
                 for l in self.grid_levels
                 if l["side"] == "sell" and l["status"] == "open"
             )
             placeable = pending_buys + (pending_sells if has_sellable_inventory else 0)
             if placeable > 0:
-                self._place_grid_orders()
+                self._place_grid_orders(effective_order_size)
                 self._save_state()
 
             self._check_rebalance()
-            self._check_stop_loss()
+            self._check_stop_loss(effective_stop_loss)
 
     # --- Grid calculation ---
 
@@ -268,8 +308,9 @@ class GridStrategy(BaseStrategy):
         except Exception:
             return self.max_open_orders  # assume full on error to be safe
 
-    def _place_grid_orders(self):
+    def _place_grid_orders(self, effective_order_size: float | None = None):
         """Place all pending grid orders, each through the risk manager."""
+        order_size = effective_order_size or self.order_size_usd
         placed = 0
         skipped_sells = 0
         current_open = self._count_exchange_open_orders()
@@ -278,7 +319,7 @@ class GridStrategy(BaseStrategy):
         # Track remaining sellable inventory to avoid placing more sells
         # than we can cover (prevents "insufficient funds" errors)
         open_sell_amount = sum(
-            self.order_size_usd / l["price"]
+            order_size / l["price"]
             for l in self.grid_levels
             if l["side"] == "sell" and l["status"] == "open"
         )
@@ -288,7 +329,7 @@ class GridStrategy(BaseStrategy):
             if level["status"] != "pending":
                 continue
 
-            amount = self.order_size_usd / level["price"]
+            amount = order_size / level["price"]
 
             # Skip sell orders when we don't have enough inventory
             if level["side"] == "sell" and remaining_sellable < amount:
@@ -299,7 +340,7 @@ class GridStrategy(BaseStrategy):
                 self.logger.warning(f"Open order limit reached ({current_open + placed}/{self.max_open_orders}), skipping remaining")
                 break
 
-            cost_usd = self.order_size_usd
+            cost_usd = order_size
 
             # Check exchange minimum order size
             try:
@@ -465,14 +506,15 @@ class GridStrategy(BaseStrategy):
             )
             self.logger.info(f"Round-trip completed: P&L ${pnl_usd:.2f} (total: ${self.total_profit_usd:.2f})")
 
-        # Risk check for opposite order
-        opp_amount = self.order_size_usd / opposite_price
+        # Risk check for opposite order (use regime-adjusted size)
+        eff_order_size, _ = self._get_regime_adjustments()
+        opp_amount = eff_order_size / opposite_price
         order_request = OrderRequest(
             symbol=self.symbol,
             side=opposite_side,
             amount=opp_amount,
             price=opposite_price,
-            cost_usd=self.order_size_usd,
+            cost_usd=eff_order_size,
             strategy="grid",
         )
         decision = self.risk_manager.check(order_request)
@@ -485,7 +527,7 @@ class GridStrategy(BaseStrategy):
             # For sell orders, verify we have enough inventory to cover
             elif opposite_side == "sell":
                 open_sell_amount = sum(
-                    self.order_size_usd / l["price"]
+                    eff_order_size / l["price"]
                     for l in self.grid_levels
                     if l["side"] == "sell" and l["status"] == "open"
                 )
@@ -613,9 +655,10 @@ class GridStrategy(BaseStrategy):
 
     # --- Stop loss ---
 
-    def _check_stop_loss(self):
+    def _check_stop_loss(self, effective_stop_loss: float | None = None):
         """Check if inventory loss exceeds stop_loss_pct — emergency close."""
-        if self.inventory_amount <= 0 or not self.stop_loss_pct:
+        stop_loss_pct = effective_stop_loss or self.stop_loss_pct
+        if self.inventory_amount <= 0 or not stop_loss_pct:
             return
 
         try:
@@ -629,10 +672,10 @@ class GridStrategy(BaseStrategy):
 
         loss_pct = (self.inventory_avg_price - current_price) / self.inventory_avg_price * 100
 
-        if loss_pct >= self.stop_loss_pct:
+        if loss_pct >= stop_loss_pct:
             self.logger.critical(
                 f"STOP LOSS triggered for {self.symbol}: "
-                f"inventory loss {loss_pct:.1f}% exceeds limit {self.stop_loss_pct}%"
+                f"inventory loss {loss_pct:.1f}% exceeds limit {stop_loss_pct}%"
             )
             # Cancel all orders first
             self.order_manager.cancel_all_orders(self.symbol)

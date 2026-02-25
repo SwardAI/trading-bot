@@ -14,6 +14,7 @@ from src.alerts.telegram_bot import AlertLevel, TelegramAlerter
 from src.journal.performance import PerformanceTracker
 from src.journal.reporter import Reporter
 from src.risk.risk_manager import RiskManager
+from src.data.regime_detector import RegimeDetector
 from src.strategies.base_strategy import BaseStrategy
 from src.strategies.funding_strategy import FundingStrategy
 from src.strategies.grid_strategy import GridStrategy
@@ -63,6 +64,12 @@ class Bot:
         if self.primary_exchange:
             self.market_data = MarketDataManager(self.primary_exchange)
 
+        # Initialize regime detector (BTC weekly → bull/bear/sideways)
+        self.regime_detector: RegimeDetector | None = None
+        regime_config = self.config.get("regime_detection", {})
+        if regime_config.get("enabled") and self.market_data:
+            self.regime_detector = RegimeDetector(self.market_data, regime_config)
+
         # Initialize risk manager
         self.risk_manager: RiskManager | None = None
         if self.primary_exchange:
@@ -111,6 +118,7 @@ class Bot:
                     risk_manager=self.risk_manager,
                     order_manager=self.order_manager,
                     market_data=self.market_data,
+                    regime_detector=self.regime_detector,
                 )
                 self.strategies.append(strategy)
                 logger.info(f"Grid strategy registered for {pair_config['symbol']}")
@@ -125,6 +133,7 @@ class Bot:
                 risk_manager=self.risk_manager,
                 order_manager=self.order_manager,
                 market_data=self.market_data,
+                regime_detector=self.regime_detector,
             )
             self.strategies.append(strategy)
             logger.info(f"Momentum strategy registered for {len(momentum_config.get('pairs', []))} pairs")
@@ -397,7 +406,11 @@ class Bot:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (now, self.primary_exchange.exchange_id, total, free, used, 0.0, daily_pnl, daily_pnl_pct),
             )
-            logger.info(f"Snapshot: ${total:.2f} total, ${free:.2f} free, daily P&L: ${daily_pnl:.2f}")
+            regime_str = ""
+            if self.regime_detector:
+                regime_info = self.regime_detector.get_regime()
+                regime_str = f", regime={regime_info['regime']}"
+            logger.info(f"Snapshot: ${total:.2f} total, ${free:.2f} free, daily P&L: ${daily_pnl:.2f}{regime_str}")
         except Exception as e:
             logger.error(f"Failed to take snapshot: {e}")
 

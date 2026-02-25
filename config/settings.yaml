@@ -41,6 +41,20 @@ alerts:
     daily_report_time: "08:00"  # UTC
     report_interval_seconds: 36000 # (3600=1hr, 0=daily only)
 
+regime_detection:
+  enabled: true
+  reference_symbol: "BTC/USDT"
+  timeframe: "1w"
+  ema_period: 20
+  sma_period: 20
+  adx_period: 14
+  adx_trending_threshold: 20
+  cache_ttl_seconds: 3600
+  # Strategy adjustments per regime
+  momentum_sideways_size_mult: 0.7    # 70% position size in sideways
+  grid_bear_size_mult: 0.5            # 50% grid order size in bear
+  grid_bear_stop_loss_pct: 5          # Tighter stop in bear (vs 8% default)
+
 scheduling:
   grid_check_interval_seconds: 5       # How often to check for grid fills
   momentum_check_interval_seconds: 60  # How often to check momentum signals

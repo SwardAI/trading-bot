@@ -47,10 +47,12 @@ class MomentumStrategy(BaseStrategy):
         risk_manager: RiskManager,
         order_manager: OrderManager,
         market_data: MarketDataManager,
+        regime_detector=None,
     ):
         super().__init__("momentum", config, exchange, db, risk_manager)
         self.order_manager = order_manager
         self.market_data = market_data
+        self.regime_detector = regime_detector
 
         # Pairs to trade
         self.pairs = config.get("pairs", [])
@@ -133,6 +135,17 @@ class MomentumStrategy(BaseStrategy):
         """Scan all pairs for entry signals."""
         self._scan_count += 1
         log_summary = (self._scan_count % 5 == 0)  # Log summary every 5 scans (~5 min)
+
+        # Regime filter: skip all new entries in bear market
+        if self.regime_detector:
+            regime_info = self.regime_detector.get_regime()
+            if regime_info["regime"] == "bear":
+                if log_summary:
+                    self.logger.info(
+                        f"Momentum: skipping entries — BEAR regime "
+                        f"(ADX={regime_info['adx']:.1f}, price below EMA+SMA)"
+                    )
+                return
 
         with self._entry_lock:
             scan_results = []
@@ -355,6 +368,15 @@ class MomentumStrategy(BaseStrategy):
         # Calculate position size from risk
         balance = self.risk_manager.position_tracker.get_balance()
         risk_amount = balance["total_usd"] * (self.risk_per_trade_pct / 100)
+
+        # Regime-adjusted sizing: reduce in sideways market
+        if self.regime_detector:
+            regime_info = self.regime_detector.get_regime()
+            if regime_info["regime"] == "sideways":
+                mult = self.regime_detector.momentum_sideways_size_mult
+                risk_amount *= mult
+                self.logger.info(f"Momentum: sideways regime → position size {mult:.0%}")
+
         risk_per_unit = abs(entry_price - stop_loss)
 
         if risk_per_unit <= 0:
