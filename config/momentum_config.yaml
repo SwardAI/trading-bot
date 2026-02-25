@@ -1,5 +1,5 @@
 momentum_strategy:
-  enabled: true
+  enabled: false  # Replaced by mtf_donchian_strategy (robustness 6/7, Sharpe 1.86)
   # Pairs selected by 4yr walk-forward backtest + Monte Carlo validation:
   #   ETH:  PF=1.27, +19.8%, 100% profit probability, max DD 12.8%
   #   AVAX: PF=1.32, +21.8%, 100% profit probability, max DD 11.8% (best risk-adjusted)
@@ -46,3 +46,55 @@ momentum_strategy:
 
   # Cooldown
   cooldown_after_loss_minutes: 60
+
+# --- Vol-scaled MTF Donchian Ensemble (PRIMARY STRATEGY) ---
+# Proven via v1-v10 research: 20.2%/yr spot-only, 51.5%/yr combined (long+short)
+# Robustness: 6/7 PASS (90% weighted), 330/330 noise resilient (100%)
+mtf_donchian_strategy:
+  enabled: true
+
+  # R/DD-weighted allocation across 7 pairs (from v3 robustness research)
+  pairs:
+    - symbol: "SOL/USDT"
+      allocation_pct: 40
+    - symbol: "DOGE/USDT"
+      allocation_pct: 17
+    - symbol: "ETH/USDT"
+      allocation_pct: 12
+    - symbol: "AVAX/USDT"
+      allocation_pct: 12
+    - symbol: "LINK/USDT"
+      allocation_pct: 8
+    - symbol: "ADA/USDT"
+      allocation_pct: 6
+    - symbol: "BTC/USDT"
+      allocation_pct: 6
+
+  # Daily Donchian filter: 2/3 of [20, 50, 100] must agree on trend direction
+  daily_periods: [20, 50, 100]
+  daily_min_votes: 2
+
+  # 4h entry/exit: breakout above 14-period high, exit below 7-period low
+  entry_period_4h: 14
+  exit_period_4h: 7
+  atr_period: 14
+
+  # Chandelier stop: highest_since_entry - 3.0 * ATR
+  atr_stop_mult: 3.0
+
+  # Risk: 5% base risk per trade, vol-scaled between 0.5x and 2.0x
+  risk_per_trade_pct: 5.0
+  fee_rate: 0.001        # 0.1% taker for spot
+  futures_fee_rate: 0.0004  # 0.04% taker for futures
+
+  # Vol-scaling: risk_pct * clamp(median_atr_60 / current_atr, 0.5, 2.0)
+  vol_scale: true
+  vol_scale_lookback: 60
+  vol_scale_min: 0.5
+  vol_scale_max: 2.0
+
+  # Short-side (requires futures exchange — disabled until futures capability built)
+  enable_shorts: false
+
+  # Cooldown: 2 bars * 4h = 8 hours after a loss before re-entering
+  cooldown_bars: 2

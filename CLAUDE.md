@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Crypto quantitative trading bot running 24/7 on a VPS. Executes multiple uncorrelated strategies (grid trading, momentum, funding rate arbitrage) with centralized risk management.
+Crypto quantitative trading bot running 24/7 on a VPS. Targeting 30%+ annual returns through regime-adaptive strategies across multiple pairs.
 
-**Design Philosophy**: Small frequent trades, survive first/profit second, everything logged, modular strategies. Currently spot-only (long positions only).
+**Current state**: Spot-only (long positions only). One proven strategy ready to deploy: vol-scaled MTF Donchian ensemble (20%/yr, 6% DD, Sharpe 1.86). Getting to 30% requires adding futures capability for bear-market and sideways-market strategies.
+
+**Design Philosophy**: Survive first/profit second. Regime-aware (idle in bear markets on spot — correct behavior). Everything logged. Modular strategies. Risk-managed by central authority.
 
 ## Tech Stack
 
@@ -69,24 +71,43 @@ Key tables: `trades`, `account_snapshots`, `daily_metrics`, `grid_state`, `momen
 
 ## Strategies
 
-### Grid Trading (Primary)
-- Places buy/sell orders at regular price intervals around current price
-- Profits from oscillation regardless of direction
-- Uses geometric spacing (percentage-based) by default
-- Auto-rebalances when price drifts beyond trigger threshold
+### Vol-Scaled MTF Donchian Ensemble (PRIMARY — deploy this)
+- **Regime**: Bull markets only (correctly idles in bear/sideways on spot)
+- **Daily filter**: Donchian channels [20, 50, 100] — 2/3 must agree price is above breakout
+- **4h entry**: 14-period high breakout. 7-period low exit.
+- **Stop loss**: Chandelier exit (highest_high_since_entry - 3.0 * ATR)
+- **Position sizing**: `risk_amount = capital * risk_pct / 100; amount = risk_amount / (entry - stop_loss)`
+- **Vol-scaling**: `effective_risk = 5% * (median_ATR_60 / current_ATR)`, clamped [0.5x, 2x]
+  - Risks more when volatility is low (bigger position), less when high (smaller position)
+- **Capital cap**: `cost + fee <= capital * 0.95` (always keep 5% reserve)
+- **Fee model**: 0.1% taker per trade
+- **Pairs**: 7 with R/DD-weighted allocation: SOL 40%, DOGE 17%, ETH 12%, AVAX 12%, LINK 8%, ADA 6%, BTC 6%
+- **Performance (4yr backtest)**: 20.2%/yr, 6.0% DD, Sharpe 1.86
+- **Robustness**: 6/7 tests PASS (90% weighted score), 350/350 noise resilient (100%)
 
-### Momentum (Secondary)
-- Trend-following with 35-50% win rate but large winners
-- **Long-only on spot** — short signals are skipped (no futures trading yet)
-- Entry signals: EMA crossover + RSI + volume surge + ADX + MACD alignment
-- Requires higher timeframe confirmation (1h signal needs 4h trend agreement)
-- Dynamic trailing stops based on ATR
-- Position sized by risk: `cost_usd = risk_amount` (capital at risk), NOT notional value
+### Grid Trading (DISABLED — proven net negative)
+- Net negative over full 4yr market cycles in backtests
+- Also tested as regime-adaptive (sideways-only): 80-90% drawdown — catastrophic
+- Kept in codebase but should NOT be enabled
 
-### Funding Rate Arbitrage (Phase 2, requires $10K+)
+### EMA Momentum (DISABLED — replaced by MTF Donchian)
+- Failed robustness testing (4/7, noise fragile, parameter sensitive)
+- The MTF Donchian is strictly better on every metric
+
+### Funding Rate Arbitrage (Phase 2, requires $10K+ and futures)
 - Long spot + short perpetual futures = delta neutral
 - Collects funding payments every 8 hours
 - Activates when funding rate > 0.03% per 8hr period
+
+### Future: 6-Regime System (requires futures)
+The long-term architecture is regime-adaptive with 6 market states:
+1. Strong Uptrend → MTF momentum (current strategy)
+2. Weak Uptrend → Momentum with tighter stops
+3. Sideways → Funding rate arbitrage (delta-neutral)
+4. Weak Downtrend → Short-side momentum (needs futures)
+5. Strong Downtrend → Cash / defensive
+6. High Vol Chaos → Reduce size / sit out
+On spot-only, states 4-6 all map to "cash". Need futures for full system.
 
 ## Configuration
 
@@ -108,9 +129,15 @@ bot:
 3. **Risk Management**: Position tracking, pre-trade checks, circuit breakers ✅
 4. **Momentum Strategy**: Indicators, signal generation, trailing stops ✅
 5. **Monitoring**: Telegram alerts, daily reports, trade journal ✅
-6. **Backtesting**: Historical data, engine with fee/slippage modeling (partial)
+6. **Backtesting**: Historical data, engine with fee/slippage modeling ✅
 7. **Deployment**: Docker, VPS, GitHub Actions CI/CD ✅
 8. **Production hardening**: Grid restart reconciliation, balance cache TTL, DB transactions, graceful shutdown ✅
+9. **Strategy Research**: v1-v7 extensive backtesting, found vol-scaled MTF Donchian ✅
+10. **MTF Strategy Implementation**: Implement proven strategy as live code ← CURRENT
+11. **Paper Trading**: 2+ weeks validation on Binance testnet
+12. **Go Live**: Switch to real trading (spot only, long only)
+13. **Futures Capability**: Add perpetual futures for Phase 2 strategies (30%+ target)
+14. **Regime System**: Full 6-regime classifier + per-regime strategy router
 
 ## Deployment
 
@@ -126,7 +153,7 @@ bot:
 - `RiskManager(config, db, exchange)` — creates its own `PositionTracker` internally
 - `generate_report.py` runs via `docker exec` as a separate process — needs its own exchange connection
 - Grid `on_tick()` must place pending orders after checking fills (not just on startup)
-- Balance cache has 30s TTL to prevent stale risk checks
+- Balance cache has 10s TTL to prevent stale risk checks (reduced from 30s)
 
 ## Important Constraints
 

@@ -17,7 +17,10 @@ CORRELATED_GROUPS = {
 
 # Master group: ALL crypto is correlated during crashes.
 # Used to enforce max_correlated_exposure_pct across the entire portfolio.
-CRYPTO_ALL = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT", "LINK/USDT"]
+CRYPTO_ALL = [
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT", "LINK/USDT",
+    "ADA/USDT", "DOGE/USDT", "DOT/USDT", "ATOM/USDT", "NEAR/USDT", "UNI/USDT",
+]
 
 # Funding positions are delta-neutral (spot long + futures short).
 # Count only a fraction of notional as directional exposure to account
@@ -149,6 +152,14 @@ class PositionTracker:
         if momentum:
             exposure += momentum["amount"] * momentum["entry_price"]
 
+        # Open MTF Donchian positions
+        mtf = self.db.fetch_one(
+            "SELECT amount, entry_price FROM mtf_donchian_positions WHERE pair = ? AND status = 'open'",
+            (symbol,),
+        )
+        if mtf:
+            exposure += mtf["amount"] * mtf["entry_price"]
+
         # Open funding positions (delta-neutral, reduced weight)
         funding = self.db.fetch_one(
             "SELECT notional_usd FROM funding_positions WHERE pair = ? AND status = 'open'",
@@ -219,6 +230,13 @@ class PositionTracker:
             "SELECT pair, amount, entry_price FROM momentum_positions WHERE status = 'open'"
         )
         for pos in momentum_positions:
+            total += pos["amount"] * pos["entry_price"]
+
+        # Open MTF Donchian positions
+        mtf_positions = self.db.fetch_all(
+            "SELECT pair, amount, entry_price FROM mtf_donchian_positions WHERE status = 'open'"
+        )
+        for pos in mtf_positions:
             total += pos["amount"] * pos["entry_price"]
 
         # Open funding positions (delta-neutral, reduced weight)

@@ -205,6 +205,22 @@ class RiskManager:
             except Exception as e:
                 logger.warning(f"Could not fetch price for {pos['pair']} unrealized P&L: {e}")
 
+        # MTF Donchian positions unrealized P&L
+        mtf_positions = self.db.fetch_all(
+            "SELECT pair, side, amount, entry_price FROM mtf_donchian_positions WHERE status = 'open'"
+        )
+        for pos in mtf_positions:
+            try:
+                ticker = self.position_tracker.exchange.fetch_ticker(pos["pair"])
+                current_price = ticker.get("last", 0)
+                if current_price > 0:
+                    if pos["side"] == "long":
+                        unrealized += (current_price - pos["entry_price"]) * pos["amount"]
+                    else:
+                        unrealized += (pos["entry_price"] - current_price) * pos["amount"]
+            except Exception as e:
+                logger.warning(f"Could not fetch price for {pos['pair']} MTF unrealized P&L: {e}")
+
         # Funding positions unrealized P&L (delta-neutral: spot + futures + collected funding)
         funding_positions = self.db.fetch_all(
             """SELECT pair, spot_entry_price, spot_entry_amount,

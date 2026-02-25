@@ -131,7 +131,34 @@ CREATE TABLE IF NOT EXISTS funding_positions (
     notional_usd REAL NOT NULL
 );
 
+-- MTF Donchian strategy positions
+CREATE TABLE IF NOT EXISTS mtf_donchian_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pair TEXT NOT NULL,
+    side TEXT NOT NULL,
+    market_type TEXT DEFAULT 'spot',
+    entry_price REAL NOT NULL,
+    entry_time DATETIME NOT NULL,
+    amount REAL NOT NULL,
+    stop_loss REAL NOT NULL,
+    current_stop REAL NOT NULL,
+    highest_since_entry REAL,
+    lowest_since_entry REAL,
+    entry_atr REAL,
+    vol_scale_factor REAL,
+    allocation_pct REAL,
+    entry_signals TEXT,
+    exit_price REAL,
+    exit_time DATETIME,
+    exit_reason TEXT,
+    pnl_usd REAL,
+    pnl_pct REAL,
+    status TEXT DEFAULT 'open'
+);
+
 -- Indexes
+CREATE INDEX IF NOT EXISTS idx_mtf_donchian_status ON mtf_donchian_positions(status);
+CREATE INDEX IF NOT EXISTS idx_mtf_donchian_pair ON mtf_donchian_positions(pair);
 CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp);
 CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy);
 CREATE INDEX IF NOT EXISTS idx_trades_pair ON trades(pair);

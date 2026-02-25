@@ -19,6 +19,7 @@ from src.strategies.base_strategy import BaseStrategy
 from src.strategies.funding_strategy import FundingStrategy
 from src.strategies.grid_strategy import GridStrategy
 from src.strategies.momentum_strategy import MomentumStrategy
+from src.strategies.mtf_donchian_strategy import MtfDonchianStrategy
 
 logger = setup_logger(__name__)
 
@@ -138,6 +139,21 @@ class Bot:
             self.strategies.append(strategy)
             logger.info(f"Momentum strategy registered for {len(momentum_config.get('pairs', []))} pairs")
 
+        # MTF Donchian strategy — single instance covering all pairs
+        mtf_config = self.config.get("mtf_donchian_strategy", {})
+        if mtf_config.get("enabled") and self.primary_exchange and self.risk_manager and self.order_manager and self.market_data:
+            strategy = MtfDonchianStrategy(
+                config=mtf_config,
+                exchange=self.primary_exchange,
+                db=self.db,
+                risk_manager=self.risk_manager,
+                order_manager=self.order_manager,
+                market_data=self.market_data,
+                regime_detector=self.regime_detector,
+            )
+            self.strategies.append(strategy)
+            logger.info(f"MTF Donchian strategy registered for {len(mtf_config.get('pairs', []))} pairs")
+
         # Funding rate arbitrage strategy — needs a separate futures exchange instance
         funding_config = self.config.get("funding_strategy", {})
         if funding_config.get("enabled") and self.primary_exchange and self.risk_manager and self.order_manager and self.market_data:
@@ -195,6 +211,18 @@ class Bot:
             seconds=momentum_interval,
             id="momentum_tick",
             name="Momentum tick",
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # MTF Donchian strategy tick
+        mtf_interval = sched_config.get("mtf_donchian_check_interval_seconds", 60)
+        self.scheduler.add_job(
+            self._tick_mtf_donchian_strategies,
+            "interval",
+            seconds=mtf_interval,
+            id="mtf_donchian_tick",
+            name="MTF Donchian tick",
             max_instances=1,
             coalesce=True,
         )
@@ -283,8 +311,8 @@ class Bot:
 
         logger.info(
             f"Scheduler configured: grid={grid_interval}s, momentum={momentum_interval}s, "
-            f"funding={funding_interval}s, risk={risk_interval}s, reconcile={recon_interval}s, "
-            f"snapshot={snapshot_interval}s"
+            f"mtf_donchian={mtf_interval}s, funding={funding_interval}s, risk={risk_interval}s, "
+            f"reconcile={recon_interval}s, snapshot={snapshot_interval}s"
         )
 
     def _tick_strategy(self, strategy: BaseStrategy):
@@ -324,6 +352,12 @@ class Bot:
         """Tick all momentum strategies (runs every momentum_check_interval_seconds)."""
         for strategy in self.strategies:
             if isinstance(strategy, MomentumStrategy):
+                self._tick_strategy(strategy)
+
+    def _tick_mtf_donchian_strategies(self):
+        """Tick all MTF Donchian strategies (runs every mtf_donchian_check_interval_seconds)."""
+        for strategy in self.strategies:
+            if isinstance(strategy, MtfDonchianStrategy):
                 self._tick_strategy(strategy)
 
     def _tick_funding_strategies(self):

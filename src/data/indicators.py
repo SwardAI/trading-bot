@@ -80,6 +80,43 @@ def add_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return ta.volatility.average_true_range(df["high"], df["low"], df["close"], window=period)
 
 
+def add_donchian_high(df: pd.DataFrame, period: int) -> pd.Series:
+    """Highest high over the lookback period, shifted by 1 bar (uses completed bars only)."""
+    return df["high"].rolling(period).max().shift(1)
+
+
+def add_donchian_low(df: pd.DataFrame, period: int) -> pd.Series:
+    """Lowest low over the lookback period, shifted by 1 bar (uses completed bars only)."""
+    return df["low"].rolling(period).min().shift(1)
+
+
+def compute_mtf_donchian_indicators(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Add MTF Donchian strategy indicators to a 4h DataFrame.
+
+    Adds: highest_high (entry channel), lowest_low (exit channel), atr, atr_median.
+
+    Args:
+        df: DataFrame with OHLCV data (4h timeframe).
+        config: Dict with entry_period_4h, exit_period_4h, atr_period, vol_scale_lookback.
+
+    Returns:
+        DataFrame with indicator columns added.
+    """
+    df = df.copy()
+
+    entry_period = config.get("entry_period_4h", 14)
+    exit_period = config.get("exit_period_4h", 7)
+    atr_period = config.get("atr_period", 14)
+    vol_lookback = config.get("vol_scale_lookback", 60)
+
+    df["highest_high"] = add_donchian_high(df, entry_period)
+    df["lowest_low"] = add_donchian_low(df, exit_period)
+    df["atr"] = add_atr(df, atr_period)
+    df["atr_median"] = df["atr"].rolling(vol_lookback).median()
+
+    return df
+
+
 def add_volume_sma(df: pd.DataFrame, period: int = 20) -> pd.Series:
     """Calculate Simple Moving Average of volume.
 
