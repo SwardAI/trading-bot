@@ -16,6 +16,7 @@ import gc
 import os
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -64,6 +65,18 @@ def write_section(title: str):
 # Phase 1: Download historical funding rates
 # ============================================================
 
+_exchange_cache = {}
+
+def _get_futures_exchange():
+    """Get or create a shared ccxt binanceusdm instance."""
+    import ccxt
+    if "exchange" not in _exchange_cache:
+        ex = ccxt.binanceusdm({"enableRateLimit": True})
+        ex.load_markets()
+        _exchange_cache["exchange"] = ex
+    return _exchange_cache["exchange"]
+
+
 def download_funding_rates(symbol: str, since: str = "2022-01-01") -> pd.DataFrame:
     """Download historical funding rates from Binance.
 
@@ -72,8 +85,6 @@ def download_funding_rates(symbol: str, since: str = "2022-01-01") -> pd.DataFra
 
     Returns DataFrame with columns: [timestamp, funding_rate, symbol]
     """
-    import ccxt
-
     FUNDING_DATA_DIR.mkdir(parents=True, exist_ok=True)
     safe_symbol = symbol.replace("/", "_")
     cache_file = FUNDING_DATA_DIR / f"binance_{safe_symbol}_funding.csv"
@@ -85,10 +96,7 @@ def download_funding_rates(symbol: str, since: str = "2022-01-01") -> pd.DataFra
             log(f"  {symbol}: loaded {len(df)} cached funding rates")
             return df
 
-    exchange = ccxt.binanceusdm({
-        "enableRateLimit": True,
-    })
-    exchange.load_markets()
+    exchange = _get_futures_exchange()
 
     futures_symbol = f"{symbol}:USDT"
     if futures_symbol not in exchange.markets:
@@ -746,6 +754,7 @@ def main():
                 all_funding[symbol] = df
         except Exception as e:
             log(f"  {symbol}: FAILED - {e}")
+            traceback.print_exc()
         gc.collect()
 
     log(f"\nLoaded funding data for {len(all_funding)}/{len(ALL_PAIRS)} pairs")
@@ -813,4 +822,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        log(f"\nFATAL ERROR: {e}")
+        traceback.print_exc()
+        with open(REPORT_FILE, "a") as f:
+            f.write(f"\nFATAL ERROR: {e}\n")
+            traceback.print_exc(file=f)
