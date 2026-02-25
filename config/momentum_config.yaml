@@ -1,11 +1,16 @@
 momentum_strategy:
   enabled: true
+  # Pairs selected by 4yr walk-forward backtest + Monte Carlo validation:
+  #   ETH:  PF=1.27, +19.8%, 100% profit probability, max DD 12.8%
+  #   AVAX: PF=1.32, +21.8%, 100% profit probability, max DD 11.8% (best risk-adjusted)
+  #   LINK: PF=1.20, +13.4%, 100% profit probability, max DD 12.1%
+  # Removed:
+  #   BTC:  PF=0.89, -14.4%, 0% profit probability — consistent loser on momentum
+  #   SOL:  PF=1.05, +1.0%, fails walk-forward test (-9.2% OOS) — not robust
   pairs:
     - "ETH/USDT"
-    - "SOL/USDT"
     - "AVAX/USDT"
     - "LINK/USDT"
-    - "BTC/USDT"
 
   timeframe: "1h"
   confirmation_timeframe: "4h"
