@@ -600,6 +600,89 @@ def main():
     del pair_data
     gc.collect()
 
+    # Phase 5: Risk scaling + concentrated portfolio
+    write_section("PHASE 5: Risk Scaling & Concentrated Portfolio")
+    log("Testing 5-8% risk on top performers to find 30%/yr path")
+
+    RISK_LEVELS = [5.0, 7.0, 8.0, 10.0]
+    # Top 6 pairs by v3 individual returns
+    TOP_PAIRS = ["SOL/USDT", "DOGE/USDT", "ETH/USDT", "AVAX/USDT", "LINK/USDT", "ADA/USDT"]
+
+    base_cfg = {
+        "daily_periods": [20, 50, 100],
+        "daily_min_votes": 2,
+        "entry_period_4h": 14,
+        "exit_period_4h": 7,
+        "atr_stop_mult": 3.0,
+        "volume_mult": 1.0,
+        "cooldown_bars": 2,
+    }
+
+    for risk_pct in RISK_LEVELS:
+        cfg = {**base_cfg, "risk_per_trade_pct": risk_pct}
+        log(f"\n--- Risk per trade: {risk_pct}% ---")
+
+        pair_curves = {}
+        min_len = float("inf")
+
+        for symbol in TOP_PAIRS:
+            df_4h, df_1d, _ = load_data(symbol)
+            if df_4h is None or df_1d is None:
+                continue
+            result = multi_tf_backtest(df_4h, df_1d, cfg)
+            log(f"  {symbol:12s}: {result.total_return_pct:+7.1f}% | DD: {result.max_drawdown_pct:5.1f}% | "
+                f"PF: {result.profit_factor:5.2f} | Trades: {result.total_trades}")
+            if result.equity_curve:
+                pair_curves[symbol] = result.equity_curve
+                min_len = min(min_len, len(result.equity_curve))
+            del result, df_4h, df_1d
+            gc.collect()
+
+        if not pair_curves:
+            continue
+
+        n = len(pair_curves)
+        per_pair = INITIAL_CAPITAL / n
+        portfolio = []
+        for i in range(int(min_len)):
+            total = sum(ec[i] / INITIAL_CAPITAL * per_pair
+                        for ec in pair_curves.values() if i < len(ec))
+            portfolio.append(total)
+
+        initial = portfolio[0]
+        final = portfolio[-1]
+        total_ret = (final - initial) / initial * 100
+
+        peak = portfolio[0]
+        max_dd = 0
+        for eq in portfolio:
+            if eq > peak:
+                peak = eq
+            dd = (peak - eq) / peak * 100
+            max_dd = max(max_dd, dd)
+
+        years = min_len / (6 * 365.25)
+        annual = ((final / initial) ** (1 / years) - 1) * 100 if years > 0 else 0
+
+        rets = [(portfolio[i] - portfolio[i-1]) / portfolio[i-1]
+                for i in range(1, len(portfolio)) if portfolio[i-1] > 0]
+        sharpe = np.mean(rets) / np.std(rets) * ((6 * 365.25) ** 0.5) if rets and np.std(rets) > 0 else 0
+
+        log(f"\n  PORTFOLIO ({n} pairs, {years:.1f}yr, {risk_pct}% risk):")
+        log(f"    Total:     {total_ret:+.1f}%")
+        log(f"    Annual:    {annual:+.1f}%/year")
+        log(f"    Max DD:    {max_dd:.1f}%")
+        log(f"    Sharpe:    {sharpe:.2f}")
+        log(f"    R/DD:      {total_ret / max_dd:.2f}" if max_dd > 0 else "    R/DD: inf")
+
+        if annual >= 30:
+            log(f"    *** TARGET 30%/yr ACHIEVED! ***")
+        elif annual >= 20:
+            log(f"    Close to target ({annual:.1f}%)")
+
+        del pair_curves
+        gc.collect()
+
     # Final summary
     write_section("FINAL SUMMARY")
     elapsed = time.time() - start
