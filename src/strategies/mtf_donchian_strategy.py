@@ -11,6 +11,7 @@ from src.data.indicators import add_donchian_high, add_donchian_low, add_atr, co
 from src.data.market_data import MarketDataManager
 from src.execution.order_manager import OrderManager
 from src.risk.risk_manager import OrderRequest, RiskManager
+from src.alerts.telegram_bot import TelegramAlerter
 from src.strategies.base_strategy import BaseStrategy
 
 
@@ -43,12 +44,14 @@ class MtfDonchianStrategy(BaseStrategy):
         market_data: MarketDataManager,
         regime_detector=None,
         futures_exchange: ExchangeManager | None = None,
+        alerter: TelegramAlerter | None = None,
     ):
         super().__init__("mtf_donchian", config, exchange, db, risk_manager)
         self.order_manager = order_manager
         self.market_data = market_data
         self.regime_detector = regime_detector
         self.futures_exchange = futures_exchange
+        self.alerter = alerter
 
         # Pairs with allocation percentages
         self.pairs_config = config.get("pairs", [])
@@ -434,6 +437,11 @@ class MtfDonchianStrategy(BaseStrategy):
             f"risk=${risk_amount:.2f}, alloc={allocation_pct*100:.0f}%"
         )
 
+        if self.alerter:
+            self.alerter.send_trade_alert(
+                "mtf_donchian", f"{side} {market_type}", symbol, trade["price"]
+            )
+
     def _place_futures_order(self, symbol: str, side: str, amount: float, price: float) -> dict | None:
         """Place a futures order using the futures exchange.
 
@@ -649,6 +657,12 @@ class MtfDonchianStrategy(BaseStrategy):
             f"@ {actual_exit_price:.4f} | reason={reason} | "
             f"P&L: ${pnl_usd:.2f} ({pnl_pct:.2f}%)"
         )
+
+        if self.alerter:
+            self.alerter.send_trade_alert(
+                "mtf_donchian", f"close {position['side']} ({reason})",
+                position["pair"], actual_exit_price, pnl_usd,
+            )
 
     # --- Cooldown ---
 

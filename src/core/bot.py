@@ -165,6 +165,7 @@ class Bot:
                 market_data=self.market_data,
                 regime_detector=self.regime_detector,
                 futures_exchange=futures_exchange,
+                alerter=self.alerter,
             )
             self.strategies.append(strategy)
             shorts_str = "shorts=ON" if futures_exchange else "shorts=OFF (no futures)"
@@ -352,7 +353,7 @@ class Bot:
                     f"{strategy.strategy_name} failed {strategy._consecutive_failures} ticks in a row — "
                     f"stopping to prevent stale orders"
                 )
-                self.alerter.send_alert(
+                self.alerter.send(
                     f"Strategy {strategy.strategy_name} stopped after {strategy._consecutive_failures} consecutive errors: {e}",
                     AlertLevel.CRITICAL,
                 )
@@ -502,7 +503,7 @@ class Bot:
 
         if not markets_loaded:
             logger.critical("No exchange markets loaded — cannot start strategies")
-            self.alerter.send_alert("Bot startup failed: could not load exchange markets", AlertLevel.CRITICAL)
+            self.alerter.send("Bot startup failed: could not load exchange markets", AlertLevel.CRITICAL)
             self.running = False
             return
 

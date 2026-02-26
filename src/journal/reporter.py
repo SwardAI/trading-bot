@@ -41,6 +41,7 @@ class Reporter:
         # Strategy breakdowns
         grid_metrics = self.performance.get_strategy_metrics("grid", days=1)
         momentum_metrics = self.performance.get_strategy_metrics("momentum", days=1)
+        mtf_donchian_metrics = self.performance.get_strategy_metrics("mtf_donchian", days=1)
         funding_metrics = self.performance.get_strategy_metrics("funding", days=1)
 
         # Grid round trips
@@ -49,6 +50,9 @@ class Reporter:
         # Open positions
         open_momentum = self.db.fetch_all(
             "SELECT * FROM momentum_positions WHERE status = 'open'"
+        )
+        open_mtf_donchian = self.db.fetch_all(
+            "SELECT * FROM mtf_donchian_positions WHERE status = 'open'"
         )
         open_funding = self.db.fetch_all(
             "SELECT * FROM funding_positions WHERE status IN ('open', 'closing')"
@@ -90,6 +94,7 @@ class Reporter:
             "<b>Strategy Breakdown:</b>",
             f"  Grid:     {sign}${grid_metrics['net_pnl']:,.2f} ({grid_rts} round trips)",
             f"  Momentum: {sign}${momentum_metrics['net_pnl']:,.2f} ({momentum_metrics['num_wins']}W / {momentum_metrics['num_losses']}L)",
+            f"  MTF Donch: {'+' if mtf_donchian_metrics['net_pnl'] >= 0 else ''}${mtf_donchian_metrics['net_pnl']:,.2f} ({mtf_donchian_metrics['num_wins']}W / {mtf_donchian_metrics['num_losses']}L)",
         ]
 
         # Funding line — show collected funding if active, otherwise "not active"
@@ -104,13 +109,20 @@ class Reporter:
             lines.append(f"  Funding:  $0.00 (not active)")
 
         # Open positions
-        if open_momentum or open_funding or grid_states:
+        if open_momentum or open_mtf_donchian or open_funding or grid_states:
             lines.append("")
             lines.append(f"{pnl_emoji} <b>Open Positions:</b>")
             for gs in grid_states:
                 if gs["inventory_amount"] and gs["inventory_amount"] > 0:
                     inv_value = gs["inventory_amount"] * (gs["inventory_avg_price"] or 0)
                     lines.append(f"  Grid {gs['pair']}: {gs['inventory_amount']:.6f} (${inv_value:,.2f})")
+            for pos in open_mtf_donchian:
+                side_label = pos['side'].upper()
+                mkt = "futures" if pos.get('market_type') == 'futures' else "spot"
+                lines.append(
+                    f"  MTF: {side_label} {pos['pair']} ({mkt}) "
+                    f"@ ${pos['entry_price']:,.2f} (stop: ${pos['current_stop']:,.2f})"
+                )
             for pos in open_momentum:
                 lines.append(
                     f"  Momentum: {pos['side'].upper()} {pos['pair']} "
@@ -166,6 +178,7 @@ class Reporter:
 
         grid_weekly = self.performance.get_strategy_metrics("grid", days=7)
         momentum_weekly = self.performance.get_strategy_metrics("momentum", days=7)
+        mtf_weekly = self.performance.get_strategy_metrics("mtf_donchian", days=7)
         funding_weekly = self.performance.get_strategy_metrics("funding", days=7)
 
         sign = "+" if weekly_pnl >= 0 else ""
@@ -184,6 +197,10 @@ class Reporter:
             "<b>Momentum:</b>",
             f"  Trades: {momentum_weekly['num_trades']} | Win rate: {momentum_weekly['win_rate']:.0f}%",
             f"  P&L: ${momentum_weekly['net_pnl']:,.2f} | Profit factor: {momentum_weekly['profit_factor']:.2f}",
+            "",
+            "<b>MTF Donchian:</b>",
+            f"  Trades: {mtf_weekly['num_trades']} | Win rate: {mtf_weekly['win_rate']:.0f}%",
+            f"  P&L: ${mtf_weekly['net_pnl']:,.2f} | Profit factor: {mtf_weekly['profit_factor']:.2f}",
         ]
 
         # Only show funding section if there was activity
