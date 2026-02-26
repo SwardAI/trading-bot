@@ -1,29 +1,37 @@
 funding_strategy:
-  enabled: false
+  enabled: true
+
   exchanges:
     spot: "binance"
     futures: "binance"
 
+  # Top pairs by funding rate profitability (v8 research):
+  # UNI 5.4%/yr, LINK 5.2%/yr, DOGE 4.3%/yr, ETH 3.8%/yr, BTC 3.7%/yr
+  # BTC/ETH are safest (94-96% positive rates in bull, max negative streak 6-8 days)
   pairs:
     - "BTC/USDT"
     - "ETH/USDT"
     - "SOL/USDT"
+    - "DOGE/USDT"
+    - "LINK/USDT"
 
-  # Entry criteria
-  min_funding_rate: 0.03          # 0.03% per 8hr = ~13.7% annualized
-  funding_history_checks: 3       # Last N funding payments must all be positive
+  # Entry: rate >= 1bps (0.01%) per 8hr — from v8 research optimal config
+  # Lower threshold catches more opportunities. 0.01% * 3/day * 365 = 10.95% annualized gross
+  min_funding_rate: 0.01
+  funding_history_checks: 3       # Last 3 payments must all be positive
 
-  # Exit criteria
-  exit_funding_rate: 0.01         # Close when rate drops below this
-  exit_confirmations_needed: 2    # Rate must be low for N consecutive checks
-  max_hold_days: 7                # Force re-evaluation after this many days
+  # Exit: close when rate goes negative for 2 consecutive checks
+  exit_funding_rate: -0.01        # Exit on negative rates (we'd be paying, not earning)
+  exit_confirmations_needed: 2
+  max_hold_days: 30               # v8 showed 30-day hold is optimal (was 7)
 
-  # Position sizing
-  position_size_pct: 15           # % of portfolio per position
+  # Position sizing: 12.5% per position, max 2 = 25% total
+  # Leaves 75% for MTF Donchian (which rarely uses >50%)
+  position_size_pct: 12.5
   max_positions: 2
 
   # Safety limits
   max_basis_divergence_pct: 1.5   # Max spot-futures price gap to tolerate
-  rebalance_threshold_pct: 2.0    # Rebalance if hedge ratio drifts
-  futures_leverage: 1             # Always 1x for funding arb — no added leverage
+  rebalance_threshold_pct: 2.0
+  futures_leverage: 1             # Always 1x — no leverage
   margin_warning_pct: 20          # Emergency close if margin ratio drops below this
