@@ -529,6 +529,15 @@ class Bot:
             f"scheduler started"
         )
 
+        # Send startup notification to Telegram
+        strategy_names = [s.strategy_name for s in self.strategies]
+        self.alerter.send(
+            f"<b>Bot started</b> ({self.mode.upper()} mode)\n"
+            f"Strategies: {', '.join(strategy_names) or 'none'}\n"
+            f"Exchange: {list(self.exchanges.keys())}",
+            AlertLevel.INFO,
+        )
+
         # Main loop — keep alive while scheduler runs
         try:
             while self.running:

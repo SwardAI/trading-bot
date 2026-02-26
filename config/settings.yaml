@@ -39,7 +39,7 @@ alerts:
     bot_token_env: "TELEGRAM_BOT_TOKEN"
     chat_id_env: "TELEGRAM_CHAT_ID"
     daily_report_time: "08:00"  # UTC
-    report_interval_seconds: 36000 # (3600=1hr, 0=daily only)
+    report_interval_seconds: 0  # 0 = use daily cron at daily_report_time
 
 regime_detection:
   enabled: false  # 4yr backtest: momentum +18.3% without filter vs +13.5% with filter
