@@ -1,5 +1,5 @@
 funding_strategy:
-  enabled: true
+  enabled: false  # Disabled: Binance deprecated futures on testnet. Enable when switching to live.
 
   exchanges:
     spot: "binance"
